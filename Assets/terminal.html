@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; background: #1e1e2e; overflow: hidden; }
+    #root { position: relative; width: 100%; height: 100%; }
+    .session-wrap {
+      position: absolute; inset: 0; display: none;
+      padding: 6px 8px;
+    }
+    .session-wrap.active { display: block; }
+    .xterm-viewport::-webkit-scrollbar { width: 8px; }
+    .xterm-viewport::-webkit-scrollbar-track { background: #181825; }
+    .xterm-viewport::-webkit-scrollbar-thumb { background: #45475a; border-radius: 4px; }
+
+    /* 右键菜单 */
+    #ctx-menu {
+      display: none;
+      position: fixed;
+      background: #313244;
+      border: 1px solid #45475a;
+      border-radius: 6px;
+      padding: 4px;
+      z-index: 9999;
+      min-width: 130px;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+    }
+    .ctx-item {
+      padding: 6px 14px;
+      font-size: 13px;
+      color: #cdd6f4;
+      font-family: system-ui, sans-serif;
+      border-radius: 4px;
+      cursor: pointer;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 20px;
+    }
+    .ctx-item:hover { background: #45475a; }
+    .ctx-item .hint { color: #6c7086; font-size: 11px; }
+    .ctx-sep { height: 1px; background: #45475a; margin: 3px 4px; }
+  </style>
+  <link rel="stylesheet" href="xterm.min.css">
+</head>
+<body>
+  <div id="root"></div>
+
+  <!-- 右键菜单 -->
+  <div id="ctx-menu">
+    <div class="ctx-item" id="ctx-copy">
+      <span>复制</span><span class="hint">Ctrl+Shift+C</span>
+    </div>
+    <div class="ctx-item" id="ctx-paste">
+      <span>粘贴</span><span class="hint">Ctrl+Shift+V</span>
+    </div>
+    <div class="ctx-sep"></div>
+    <div class="ctx-item" id="ctx-selall">全选</div>
+    <div class="ctx-item" id="ctx-clear">清屏</div>
+  </div>
+
+  <script src="xterm.min.js"></script>
+  <script src="addon-fit.min.js"></script>
+  <script>
+    const sessions = {};
+    let activeId = null;
+    const root = document.getElementById('root');
+    const ctxMenu = document.getElementById('ctx-menu');
+
+    // ── WebView2 消息接收 ─────────────────────────────────────────────────────
+    window.chrome.webview.addEventListener('message', evt => {
+      const msg = JSON.parse(evt.data);
+      const { type, sessionId } = msg;
+      if      (type === 'create')   createSession(sessionId);
+      else if (type === 'activate') activateSession(sessionId);
+      else if (type === 'data')     writeData(sessionId, msg.data);
+      else if (type === 'resize')   resizeSession(sessionId, msg.cols, msg.rows);
+      else if (type === 'destroy')  destroySession(sessionId);
+    });
+
+    // ── 会话管理 ──────────────────────────────────────────────────────────────
+    function createSession(id) {
+      if (sessions[id]) return;
+      const wrap = document.createElement('div');
+      wrap.className = 'session-wrap';
+      root.appendChild(wrap);
+
+      const term = new Terminal({
+        fontFamily: '"Cascadia Code","JetBrains Mono","Fira Code",Consolas,monospace',
+        fontSize: 13,
+        lineHeight: 1.3,
+        cursorBlink: true,
+        scrollback: 5000,
+        // 选中自动复制（通过 C# 写入系统剪贴板，见下方 onSelectionChange）
+        copyOnSelect: false,
+        theme: {
+          // 仿 macOS Terminal：绿色前景 + 深色背景
+          background:     '#1e1e2e',
+          foreground:     '#00fb00',
+          cursor:         '#00fb00',
+          cursorAccent:   '#1e1e2e',
+          selectionBackground: '#3d5a3d',
+          black:          '#1e1e2e', red:          '#ff6b6b',
+          green:          '#00fb00', yellow:       '#f9e2af',
+          blue:           '#89b4fa', magenta:      '#cba6f7',
+          cyan:           '#89dceb', white:        '#e0e0e0',
+          brightBlack:    '#585b70', brightRed:    '#ff8787',
+          brightGreen:    '#33ff33', brightYellow: '#f9e2af',
+          brightBlue:     '#89b4fa', brightMagenta:'#cba6f7',
+          brightCyan:     '#89dceb', brightWhite:  '#ffffff'
+        }
+      });
+
+      const fit = new FitAddon.FitAddon();
+      term.loadAddon(fit);
+      term.open(wrap);
+      fit.fit();
+
+      // 键盘输入 → C#
+      term.onData(data => {
+        window.chrome.webview.postMessage(
+          JSON.stringify({ type: 'input', sessionId: id, data })
+        );
+      });
+
+      // 选中文字后通知 C# 写入剪贴板（复制）
+      term.onSelectionChange(() => {
+        const sel = term.getSelection();
+        if (sel) {
+          window.chrome.webview.postMessage(
+            JSON.stringify({ type: 'copy-text', sessionId: id, data: sel })
+          );
+        }
+      });
+
+      sessions[id] = { term, fit, wrap };
+    }
+
+    function activateSession(id) {
+      Object.values(sessions).forEach(s => s.wrap.classList.remove('active'));
+      if (!sessions[id]) return;
+      sessions[id].wrap.classList.add('active');
+      sessions[id].fit.fit();
+      sessions[id].term.focus();
+      activeId = id;
+      notifySize(id);
+    }
+
+    function writeData(id, data) {
+      if (sessions[id]) sessions[id].term.write(data);
+    }
+
+    function resizeSession(id, cols, rows) {
+      if (!sessions[id]) return;
+      try { sessions[id].term.resize(cols, rows); } catch(e) {}
+      sessions[id].fit.fit();
+    }
+
+    function destroySession(id) {
+      if (!sessions[id]) return;
+      sessions[id].term.dispose();
+      root.removeChild(sessions[id].wrap);
+      delete sessions[id];
+      if (activeId === id) activeId = null;
+    }
+
+    function notifySize(id) {
+      if (!sessions[id]) return;
+      const { cols, rows } = sessions[id].term;
+      window.chrome.webview.postMessage(
+        JSON.stringify({ type: 'resize', sessionId: id, cols, rows })
+      );
+    }
+
+    // ── 键盘快捷键（复制 / 粘贴） ────────────────────────────────────────────
+    document.addEventListener('keydown', e => {
+      if (e.ctrlKey && e.shiftKey) {
+        if (e.key === 'C' || e.key === 'c') {
+          // Ctrl+Shift+C：复制选中文字（已通过 onSelectionChange 写入剪贴板）
+          e.preventDefault();
+        } else if (e.key === 'V' || e.key === 'v') {
+          // Ctrl+Shift+V：请求 C# 粘贴剪贴板内容
+          e.preventDefault();
+          if (activeId !== null) {
+            window.chrome.webview.postMessage(
+              JSON.stringify({ type: 'paste-request', sessionId: activeId })
+            );
+          }
+        }
+      }
+    });
+
+    // ── Ctrl+滚轮缩放字体 ────────────────────────────────────────────────────
+    document.addEventListener('wheel', e => {
+      if (!e.ctrlKey) return;
+      e.preventDefault();
+      if (activeId === null || !sessions[activeId]) return;
+      const term = sessions[activeId].term;
+      const cur  = term.options.fontSize || 13;
+      const next = e.deltaY < 0
+        ? Math.min(cur + 1, 28)
+        : Math.max(cur - 1, 8);
+      if (next !== cur) {
+        term.options.fontSize = next;
+        sessions[activeId].fit.fit();
+        notifySize(activeId);
+      }
+    }, { passive: false });
+
+    // ── 右键菜单 ──────────────────────────────────────────────────────────────
+    document.addEventListener('contextmenu', e => {
+      e.preventDefault();
+      ctxMenu.style.display = 'block';
+      // 防止菜单超出屏幕
+      const x = Math.min(e.clientX, window.innerWidth  - ctxMenu.offsetWidth  - 4);
+      const y = Math.min(e.clientY, window.innerHeight - ctxMenu.offsetHeight - 4);
+      ctxMenu.style.left = x + 'px';
+      ctxMenu.style.top  = y + 'px';
+    });
+
+    document.addEventListener('click', () => hideCtxMenu());
+    document.addEventListener('keydown', e => { if (e.key === 'Escape') hideCtxMenu(); });
+    function hideCtxMenu() { ctxMenu.style.display = 'none'; }
+
+    document.getElementById('ctx-copy').addEventListener('click', () => {
+      // 选中的文字已通过 onSelectionChange 写入剪贴板
+      hideCtxMenu();
+      if (activeId && sessions[activeId]) sessions[activeId].term.focus();
+    });
+
+    document.getElementById('ctx-paste').addEventListener('click', () => {
+      hideCtxMenu();
+      if (activeId !== null) {
+        window.chrome.webview.postMessage(
+          JSON.stringify({ type: 'paste-request', sessionId: activeId })
+        );
+      }
+    });
+
+    document.getElementById('ctx-selall').addEventListener('click', () => {
+      hideCtxMenu();
+      if (activeId && sessions[activeId]) sessions[activeId].term.selectAll();
+    });
+
+    document.getElementById('ctx-clear').addEventListener('click', () => {
+      hideCtxMenu();
+      if (activeId && sessions[activeId]) {
+        sessions[activeId].term.clear();
+        sessions[activeId].term.focus();
+      }
+    });
+
+    // ── 自动调整大小 ──────────────────────────────────────────────────────────
+    new ResizeObserver(() => {
+      if (activeId && sessions[activeId]) {
+        sessions[activeId].fit.fit();
+        notifySize(activeId);
+      }
+    }).observe(root);
+  </script>
+</body>
+</html>
