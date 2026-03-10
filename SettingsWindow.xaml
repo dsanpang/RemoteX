@@ -54,6 +54,7 @@
             <Setter Property="VerticalContentAlignment" Value="Center"/>
             <Setter Property="HorizontalAlignment"      Value="Right"/>
             <Setter Property="VerticalAlignment"        Value="Center"/>
+            <EventSetter Event="GotKeyboardFocus" Handler="Input_GotFocus"/>
             <Style.Triggers>
                 <Trigger Property="IsFocused" Value="True">
                     <Setter Property="BorderBrush" Value="#89B4FA"/>
@@ -81,6 +82,7 @@
             <Setter Property="Height"                   Value="34"/>
             <Setter Property="FontSize"                 Value="13"/>
             <Setter Property="VerticalContentAlignment" Value="Center"/>
+            <EventSetter Event="GotKeyboardFocus" Handler="Input_GotFocus"/>
             <Style.Triggers>
                 <Trigger Property="IsFocused" Value="True">
                     <Setter Property="BorderBrush" Value="#89B4FA"/>
@@ -171,64 +173,6 @@
             </StackPanel>
         </Border>
 
-        <!-- ── SOCKS 代理（多机房跳板机）── -->
-        <Border Style="{StaticResource SectionBlock}">
-            <StackPanel>
-                <DockPanel Style="{StaticResource SectionTitle}">
-                    <Border DockPanel.Dock="Left" Width="3" CornerRadius="2" Background="#F9E2AF" Margin="0,1,10,1"/>
-                    <TextBlock Text="SOCKS 代理（多机房跳板机）" Foreground="#F9E2AF" FontSize="11" FontWeight="SemiBold" VerticalAlignment="Center"/>
-                </DockPanel>
-                <TextBlock Text="每机房一个代理；在「编辑服务器」中选择该服务器通过哪个代理连接。" Style="{StaticResource RH}" Margin="0,0,0,10"/>
-                <Grid Margin="0,0,0,12">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="100"/>
-                    </Grid.ColumnDefinitions>
-                    <ListBox x:Name="SocksProxyListBox" Grid.Column="0" MinHeight="88" MaxHeight="140"
-                             Background="#313244" Foreground="#CDD6F4" BorderBrush="#45475A" BorderThickness="1"
-                             FontSize="12" SelectionChanged="SocksProxyListBox_SelectionChanged"
-                             DisplayMemberPath="Name" Padding="6,4"/>
-                    <StackPanel Grid.Column="1" VerticalAlignment="Top" Margin="10,0,0,0">
-                        <Button x:Name="SocksAddBtn" Content="添加" Height="32" Margin="0,0,0,6" Style="{StaticResource DlgSecondaryBtn}" Click="SocksAdd_Click"/>
-                        <Button x:Name="SocksSaveBtn" Content="更新" Height="32" Margin="0,0,0,6" Style="{StaticResource DlgSecondaryBtn}" Click="SocksSave_Click"/>
-                        <Button x:Name="SocksDelBtn"  Content="删除" Height="32" Style="{StaticResource DlgSecondaryBtn}" Click="SocksDel_Click"/>
-                    </StackPanel>
-                </Grid>
-                <TextBlock Text="选中一项后编辑下方并点击「更新」" Style="{StaticResource RH}" Margin="0,0,0,8"/>
-                <Grid Margin="0,0,0,10">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="56"/>
-                        <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="12"/>
-                        <ColumnDefinition Width="56"/>
-                        <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="12"/>
-                        <ColumnDefinition Width="56"/>
-                        <ColumnDefinition Width="80"/>
-                    </Grid.ColumnDefinitions>
-                    <TextBlock Text="名称" Style="{StaticResource RL}" VerticalAlignment="Center"/>
-                    <TextBox x:Name="SocksNameBox" Grid.Column="1" Style="{StaticResource TI}"/>
-                    <TextBlock Grid.Column="3" Text="主机" Style="{StaticResource RL}" VerticalAlignment="Center"/>
-                    <TextBox x:Name="SocksHostBox" Grid.Column="4" Style="{StaticResource TI}"/>
-                    <TextBlock Grid.Column="6" Text="端口" Style="{StaticResource RL}" VerticalAlignment="Center"/>
-                    <TextBox x:Name="SocksPortBox" Grid.Column="7" Style="{StaticResource NI}" Width="72" HorizontalAlignment="Left"/>
-                </Grid>
-                <Grid Margin="0,0,0,0">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="56"/>
-                        <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="12"/>
-                        <ColumnDefinition Width="56"/>
-                        <ColumnDefinition Width="*"/>
-                    </Grid.ColumnDefinitions>
-                    <TextBlock Text="用户名" Style="{StaticResource RL}" VerticalAlignment="Center"/>
-                    <TextBox x:Name="SocksUsernameBox" Grid.Column="1" Style="{StaticResource TI}"/>
-                    <TextBlock Grid.Column="3" Text="密码" Style="{StaticResource RL}" VerticalAlignment="Center"/>
-                    <PasswordBox x:Name="SocksPasswordBox" Grid.Column="4" Height="34" Padding="8,0"
-                                 Background="#313244" Foreground="#CDD6F4" BorderBrush="#45475A" BorderThickness="1" FontSize="13"/>
-                </Grid>
-            </StackPanel>
-        </Border>
 
         <!-- ── 历史记录 ── -->
         <Border Style="{StaticResource SectionBlock}">

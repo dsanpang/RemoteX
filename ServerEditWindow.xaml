@@ -32,6 +32,7 @@
             <Setter Property="Height"                   Value="34"/>
             <Setter Property="FontSize"                 Value="13"/>
             <Setter Property="VerticalContentAlignment" Value="Center"/>
+            <EventSetter Event="GotKeyboardFocus" Handler="Input_GotFocus"/>
             <Style.Triggers>
                 <Trigger Property="IsFocused" Value="True">
                     <Setter Property="BorderBrush" Value="#89B4FA"/>
@@ -39,7 +40,7 @@
             </Style.Triggers>
         </Style>
 
-        <!-- 密码框 -->
+        <!-- 密码框：通过 ControlTemplate 强制让 PART_ContentHost 垂直居中 -->
         <Style x:Key="FP" TargetType="PasswordBox">
             <Setter Property="Background"               Value="#313244"/>
             <Setter Property="Foreground"               Value="#CDD6F4"/>
@@ -50,11 +51,30 @@
             <Setter Property="Padding"                  Value="10,0"/>
             <Setter Property="Height"                   Value="34"/>
             <Setter Property="FontSize"                 Value="13"/>
-            <Style.Triggers>
-                <Trigger Property="IsFocused" Value="True">
-                    <Setter Property="BorderBrush" Value="#89B4FA"/>
-                </Trigger>
-            </Style.Triggers>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="PasswordBox">
+                        <!-- Padding 由 PasswordBox 内部渲染引擎自动应用，模板不再重复绑定 -->
+                        <Border Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="3"
+                                SnapsToDevicePixels="True">
+                            <ScrollViewer x:Name="PART_ContentHost"
+                                          VerticalAlignment="Center"
+                                          VerticalScrollBarVisibility="Hidden"
+                                          HorizontalScrollBarVisibility="Hidden"
+                                          Focusable="False"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsFocused" Value="True">
+                                <Setter Property="BorderBrush" Value="#89B4FA"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
         </Style>
 
         <!-- 下拉框（与输入框风格统一） -->
@@ -304,7 +324,8 @@
             <TextBlock x:Name="PasswordLabel" Grid.Column="0" Text="密码" Style="{StaticResource FL}"
                        ToolTip="SSH 私钥认证时，此处填写私钥口令（passphrase）；无口令则留空"/>
             <PasswordBox x:Name="PasswordBox" Grid.Column="1"
-                         Style="{StaticResource FP}" KeyDown="InputBox_KeyDown"/>
+                         Style="{StaticResource FP}" KeyDown="InputBox_KeyDown"
+                         GotKeyboardFocus="PasswordBox_GotFocus"/>
         </Grid>
 
         <!-- SSH 私钥路径（仅 SSH 协议可见） -->

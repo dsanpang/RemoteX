@@ -417,6 +417,17 @@
                                 <TextBlock Text="设置" VerticalAlignment="Center"/>
                             </StackPanel>
                         </Button>
+                        <Button x:Name="ProxyButton"
+                                Style="{StaticResource FlatBtn}"
+                                Click="ProxyButton_Click"
+                                ToolTip="管理 SOCKS5 代理（跳板机）"
+                                Margin="4,0,0,0">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="&#x1F517;" FontSize="12"
+                                           Margin="0,0,4,0" VerticalAlignment="Center"/>
+                                <TextBlock Text="代理" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </Button>
                     </StackPanel>
                 </StackPanel>
 

@@ -164,4 +164,14 @@ public partial class ServerEditWindow : Window
         if (e.Key == Key.Enter)
             OkButton_Click(sender, new RoutedEventArgs());
     }
+
+    private void Input_GotFocus(object sender, RoutedEventArgs e)
+    {
+        if (sender is System.Windows.Controls.TextBox tb) tb.SelectAll();
+    }
+
+    private void PasswordBox_GotFocus(object sender, RoutedEventArgs e)
+    {
+        if (sender is PasswordBox pb) pb.SelectAll();
+    }
 }

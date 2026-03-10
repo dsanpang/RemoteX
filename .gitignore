@@ -59,6 +59,10 @@ publish/
 # appsettings.json
 # ui-state.json
 
+# Go SocksServer build output
+SocksServer/proxy.exe
+SocksServer/go.sum
+
 # OS
 .DS_Store
 Thumbs.db

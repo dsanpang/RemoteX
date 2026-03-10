@@ -62,7 +62,11 @@ internal sealed class SocksProxyBridge : IDisposable
             await using var clientStream = client.GetStream();
 
             using var socks = new TcpClient();
-            await socks.ConnectAsync(socksHost, socksPort);
+            using var connectCts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            await socks.ConnectAsync(socksHost, socksPort, connectCts.Token);
+            // 禁用 Nagle 算法，确保退格键等单字节交互数据立即发送，不被缓冲延迟
+            socks.NoDelay = true;
+            client.NoDelay = true;
             await using var socksStream = socks.GetStream();
 
             // SOCKS5 握手：若有用户名则提供 0x00 与 0x02
@@ -116,6 +120,7 @@ internal sealed class SocksProxyBridge : IDisposable
             var toClient = CopyStreamAsync(socksStream, clientStream, cts.Token);
             await Task.WhenAny(toTarget, toClient);
             cts.Cancel();
+            try { await Task.WhenAll(toTarget, toClient); } catch (OperationCanceledException) { }
         }
         catch (Exception ex)
         {

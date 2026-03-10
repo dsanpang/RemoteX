@@ -631,5 +631,13 @@ namespace RemoteX
             var win = new SettingsWindow(_appSettings) { Owner = this };
             win.ShowDialog();
         }
+
+        // 代理管理按钮
+
+        private void ProxyButton_Click(object sender, RoutedEventArgs e)
+        {
+            var win = new ProxyManagerWindow(_appSettings) { Owner = this };
+            win.ShowDialog();
+        }
     }
 }

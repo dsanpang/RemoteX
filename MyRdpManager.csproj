@@ -10,6 +10,9 @@
     <AssemblyName>RemoteX</AssemblyName>
     <RootNamespace>RemoteX</RootNamespace>
     <Product>RemoteX</Product>
+    <Version>1.1.0</Version>
+    <AssemblyVersion>1.1.0.0</AssemblyVersion>
+    <FileVersion>1.1.0.0</FileVersion>
     <!-- 在 64 位 Windows 上以 64 位进程运行，确保与 64 位 mstscax.dll 架构匹配 -->
     <!-- 使用 Prefer32Bit=false 而非 PlatformTarget=x64，以保持 VS2022 Any CPU 兼容性 -->
     <Prefer32Bit>false</Prefer32Bit>

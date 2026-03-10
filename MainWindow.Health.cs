@@ -54,13 +54,18 @@ namespace RemoteX
                     await limiter.WaitAsync();
                     try
                     {
+                        // 若服务器配置了代理，则通过代理检测，确保结果与实际访问路径一致
+                        var proxy = string.IsNullOrEmpty(server.SocksProxyName)
+                            ? null
+                            : _appSettings.SocksProxies?.Find(p => p.Name == server.SocksProxyName);
+
                         var result = await _connectionHealthService.CheckAsync(
-                            server.IP, server.Port, _appSettings.HealthCheckTimeoutMs);
+                            server.IP, server.Port, _appSettings.HealthCheckTimeoutMs, proxy);
                         return (server, reachable: result.PortReachable, message: result.Message);
                     }
                     catch (Exception ex)
                     {
-            return (server, reachable: false, message: $"超时错误 ({ex.Message})");
+                        return (server, reachable: false, message: $"超时错误 ({ex.Message})");
                     }
                     finally
                     {
