@@ -40,17 +40,40 @@ internal sealed class RdpSessionService : IDisposable
 
     public void Connect(ServerInfo server, int desktopWidth, int desktopHeight, int authLevel = 0, string? connectAddressOverride = null)
     {
-        var address = connectAddressOverride ?? BuildAddress(server);
-        _rdpClient.Server   = address;
-        _rdpClient.UserName = server.Username;
-        _rdpClient.AdvancedSettings2.ClearTextPassword      = server.Password;
-        _rdpClient.AdvancedSettings2.SmartSizing            = true;
-        _rdpClient.DesktopWidth  = desktopWidth;
-        _rdpClient.DesktopHeight = desktopHeight;
-        // 1 = ?????????????????? 0??????????
-        _rdpClient.AdvancedSettings5.AuthenticationLevel    = (uint)authLevel;
-        _rdpClient.AdvancedSettings7.EnableCredSspSupport   = true;
+        // AxMsRdpClient.Server 只能接受纯主机名/IP，不能含 ":port"。
+        // 端口必须通过 AdvancedSettings2.RDPPort 单独设置，否则会抛出
+        // "Value does not fall within the expected range"（COM E_INVALIDARG）。
+        string rdpHost;
+        int    rdpPort;
+        if (connectAddressOverride != null)
+        {
+            (rdpHost, rdpPort) = SplitHostPort(connectAddressOverride, server.Port);
+        }
+        else
+        {
+            rdpHost = server.IP;
+            rdpPort = server.Port;
+        }
+
+        _rdpClient.Server                                    = rdpHost;
+        _rdpClient.AdvancedSettings2.RDPPort                = rdpPort;
+        _rdpClient.UserName                                  = server.Username;
+        _rdpClient.AdvancedSettings2.ClearTextPassword       = server.Password;
+        _rdpClient.AdvancedSettings2.SmartSizing             = true;
+        _rdpClient.DesktopWidth                              = desktopWidth;
+        _rdpClient.DesktopHeight                             = desktopHeight;
+        _rdpClient.AdvancedSettings5.AuthenticationLevel     = (uint)authLevel;
+        _rdpClient.AdvancedSettings7.EnableCredSspSupport    = true;
         _rdpClient.Connect();
+    }
+
+    /// <summary>将 "host:port" 或 "host" 拆分为 (host, port)。</summary>
+    private static (string host, int port) SplitHostPort(string address, int fallbackPort)
+    {
+        var colonIdx = address.LastIndexOf(':');
+        if (colonIdx > 0 && int.TryParse(address.AsSpan(colonIdx + 1), out var p))
+            return (address[..colonIdx], p);
+        return (address, fallbackPort);
     }
 
     public void Disconnect()
