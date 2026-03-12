@@ -22,6 +22,21 @@ internal sealed class ServerExportDto
     public string Group             { get; set; } = "";
     public string Protocol          { get; set; } = "RDP";
     public string SshPrivateKeyPath { get; set; } = "";
+    public string SocksProxyId      { get; set; } = "";
+    public string SocksProxyName    { get; set; } = "";
+}
+
+internal sealed class ProxyExportDto
+{
+    public string Id               { get; set; } = "";
+    public string Name             { get; set; } = "";
+    public string Host             { get; set; } = "";
+    public int    Port             { get; set; } = 1080;
+    public string Username         { get; set; } = "";
+    public string Password         { get; set; } = "";
+    public bool   UseTls           { get; set; }
+    public string TlsServerName    { get; set; } = "";
+    public string TlsPinnedSha256  { get; set; } = "";
 }
 
 // ── 文件信封（统一头部�?──────────────────────────────────────────────────────
@@ -32,10 +47,17 @@ internal sealed class ExportEnvelope
     [JsonPropertyName("ts")]      public string                Timestamp { get; set; } = "";
     [JsonPropertyName("enc")]     public bool                  Encrypted { get; set; }
     [JsonPropertyName("servers")] public List<ServerExportDto>? Servers  { get; set; }
+    [JsonPropertyName("proxies")] public List<ProxyExportDto>? Proxies  { get; set; }
     [JsonPropertyName("salt")]    public string? Salt   { get; set; }
     [JsonPropertyName("nonce")]   public string? Nonce  { get; set; }
     [JsonPropertyName("tag")]     public string? Tag    { get; set; }
     [JsonPropertyName("data")]    public string? Data   { get; set; }
+}
+
+internal sealed class ImportResult
+{
+    public List<ServerInfo> Servers { get; init; } = new();
+    public List<SocksProxyEntry> Proxies { get; init; } = new();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -46,7 +68,11 @@ internal static class ServerExportImport
 
     // ── Export ───────────────────────────────────────────────────────────────
 
-    public static void Export(IEnumerable<ServerInfo> servers, string filePath, string? password)
+    public static void Export(
+        IEnumerable<ServerInfo> servers,
+        IEnumerable<SocksProxyEntry> proxies,
+        string filePath,
+        string? password)
     {
         var dtos = servers.Select(s => new ServerExportDto
         {
@@ -58,7 +84,21 @@ internal static class ServerExportImport
             Description       = s.Description,
             Group             = s.Group,
             Protocol          = s.Protocol.ToString(),
-            SshPrivateKeyPath = s.SshPrivateKeyPath
+            SshPrivateKeyPath = s.SshPrivateKeyPath,
+            SocksProxyId      = s.SocksProxyId,
+            SocksProxyName    = s.SocksProxyName
+        }).ToList();
+        var proxyDtos = proxies.Select(p => new ProxyExportDto
+        {
+            Id = p.Id,
+            Name = p.Name,
+            Host = p.Host,
+            Port = p.Port,
+            Username = p.Username,
+            Password = p.Password,
+            UseTls = p.UseTls,
+            TlsServerName = p.TlsServerName,
+            TlsPinnedSha256 = p.TlsPinnedSha256
         }).ToList();
 
         ExportEnvelope envelope;
@@ -67,20 +107,30 @@ internal static class ServerExportImport
         {
             envelope = new ExportEnvelope
             {
-                Version   = 1,
+                Version   = 2,
                 Timestamp = DateTime.UtcNow.ToString("O"),
                 Encrypted = false,
-                Servers   = dtos
+                Servers   = dtos,
+                Proxies   = proxyDtos
             };
         }
         else
         {
-            var payload              = JsonSerializer.SerializeToUtf8Bytes(dtos, JsonOpts);
+            var payload = JsonSerializer.SerializeToUtf8Bytes(
+                new ExportEnvelope
+                {
+                    Version = 2,
+                    Timestamp = DateTime.UtcNow.ToString("O"),
+                    Encrypted = false,
+                    Servers = dtos,
+                    Proxies = proxyDtos
+                },
+                JsonOpts);
             var (salt, nonce, tag, cipher) = EncryptAesGcm(payload, password);
 
             envelope = new ExportEnvelope
             {
-                Version   = 1,
+                Version   = 2,
                 Timestamp = DateTime.UtcNow.ToString("O"),
                 Encrypted = true,
                 Salt      = Convert.ToBase64String(salt),
@@ -97,22 +147,18 @@ internal static class ServerExportImport
 
     // ── Import ───────────────────────────────────────────────────────────────
 
-    public static List<ServerInfo> Import(string filePath, string? password)
+    public static ImportResult Import(string filePath, string? password)
     {
         var json     = File.ReadAllText(filePath, Encoding.UTF8);
         var envelope = JsonSerializer.Deserialize<ExportEnvelope>(json, JsonOpts)
                        ?? throw new InvalidOperationException("文件格式无法解析");
 
-        if (envelope.Version != 1)
+        if (envelope.Version is not (1 or 2))
             throw new InvalidOperationException($"不支持的文件版本: {envelope.Version}");
 
-        List<ServerExportDto>? dtos;
+        ExportEnvelope plainEnvelope = envelope;
 
-        if (!envelope.Encrypted)
-        {
-            dtos = envelope.Servers ?? throw new InvalidOperationException("文件格式错误：缺少 servers 字段");
-        }
-        else
+        if (envelope.Encrypted)
         {
             if (string.IsNullOrEmpty(password))
                 throw new InvalidOperationException("此备份文件已加密，请输入导入密码");
@@ -127,9 +173,17 @@ internal static class ServerExportImport
             var cipher = Convert.FromBase64String(envelope.Data);
 
             var plain = DecryptAesGcm(salt, nonce, tag, cipher, password);
-            dtos = JsonSerializer.Deserialize<List<ServerExportDto>>(plain, JsonOpts)
-            ?? throw new InvalidOperationException("解密后内容无法解析");
+            plainEnvelope = JsonSerializer.Deserialize<ExportEnvelope>(plain, JsonOpts) ?? new ExportEnvelope();
+            if (plainEnvelope.Servers == null)
+            {
+                plainEnvelope.Servers = JsonSerializer.Deserialize<List<ServerExportDto>>(plain, JsonOpts)
+                    ?? throw new InvalidOperationException("解密后内容无法解析");
+            }
         }
+
+        var dtos = plainEnvelope.Servers
+            ?? throw new InvalidOperationException("文件格式错误：缺少 servers 字段");
+        var proxyDtos = plainEnvelope.Proxies ?? new List<ProxyExportDto>();
 
         var result = dtos.Select(d =>
         {
@@ -145,12 +199,175 @@ internal static class ServerExportImport
                 Description       = d.Description,
                 Group             = d.Group,
                 Protocol          = proto,
-                SshPrivateKeyPath = d.SshPrivateKeyPath
+                SshPrivateKeyPath = d.SshPrivateKeyPath,
+                SocksProxyId      = d.SocksProxyId,
+                SocksProxyName    = d.SocksProxyName
+            };
+        }).ToList();
+        var proxies = proxyDtos.Select(p => new SocksProxyEntry
+        {
+            Id = p.Id,
+            Name = p.Name,
+            Host = p.Host,
+            Port = p.Port,
+            Username = p.Username,
+            Password = p.Password,
+            UseTls = p.UseTls,
+            TlsServerName = p.TlsServerName,
+            TlsPinnedSha256 = p.TlsPinnedSha256
+        }).ToList();
+        foreach (var proxy in proxies)
+            proxy.EnsureId();
+
+        AppLogger.Info($"imported {result.Count} servers from {filePath}");
+        return new ImportResult
+        {
+            Servers = result,
+            Proxies = proxies
+        };
+    }
+
+    // ── 字节数组变体（供云同步使用）───────────────────────────────────────────
+
+    /// <summary>导出为内存字节（加密 JSON），供云同步上传使用。</summary>
+    internal static byte[] ExportToBytes(
+        IEnumerable<ServerInfo> servers,
+        IEnumerable<SocksProxyEntry> proxies,
+        string password)
+    {
+        var dtos = servers.Select(s => new ServerExportDto
+        {
+            Name              = s.Name,
+            IP                = s.IP,
+            Port              = s.Port,
+            Username          = s.Username,
+            Password          = s.Password,
+            Description       = s.Description,
+            Group             = s.Group,
+            Protocol          = s.Protocol.ToString(),
+            SshPrivateKeyPath = s.SshPrivateKeyPath,
+            SocksProxyId      = s.SocksProxyId,
+            SocksProxyName    = s.SocksProxyName
+        }).ToList();
+        var proxyDtos = proxies.Select(p => new ProxyExportDto
+        {
+            Id              = p.Id,
+            Name            = p.Name,
+            Host            = p.Host,
+            Port            = p.Port,
+            Username        = p.Username,
+            Password        = p.Password,
+            UseTls          = p.UseTls,
+            TlsServerName   = p.TlsServerName,
+            TlsPinnedSha256 = p.TlsPinnedSha256
+        }).ToList();
+
+        ExportEnvelope envelope;
+        if (string.IsNullOrEmpty(password))
+        {
+            envelope = new ExportEnvelope
+            {
+                Version   = 2,
+                Timestamp = DateTime.UtcNow.ToString("O"),
+                Encrypted = false,
+                Servers   = dtos,
+                Proxies   = proxyDtos
+            };
+        }
+        else
+        {
+            var payload = JsonSerializer.SerializeToUtf8Bytes(
+                new ExportEnvelope
+                {
+                    Version   = 2,
+                    Timestamp = DateTime.UtcNow.ToString("O"),
+                    Encrypted = false,
+                    Servers   = dtos,
+                    Proxies   = proxyDtos
+                }, JsonOpts);
+            var (salt, nonce, tag, cipher) = EncryptAesGcm(payload, password);
+            envelope = new ExportEnvelope
+            {
+                Version   = 2,
+                Timestamp = DateTime.UtcNow.ToString("O"),
+                Encrypted = true,
+                Salt      = Convert.ToBase64String(salt),
+                Nonce     = Convert.ToBase64String(nonce),
+                Tag       = Convert.ToBase64String(tag),
+                Data      = Convert.ToBase64String(cipher)
+            };
+        }
+
+        return Encoding.UTF8.GetBytes(JsonSerializer.Serialize(envelope, JsonOpts));
+    }
+
+    /// <summary>从内存字节（加密 JSON）导入，供云同步下载使用。</summary>
+    internal static ImportResult ImportFromBytes(byte[] data, string password)
+    {
+        var json     = Encoding.UTF8.GetString(data);
+        var envelope = JsonSerializer.Deserialize<ExportEnvelope>(json, JsonOpts)
+                       ?? throw new InvalidOperationException("云端数据格式无法解析");
+
+        if (envelope.Version is not (1 or 2))
+            throw new InvalidOperationException($"不支持的数据版本: {envelope.Version}");
+
+        ExportEnvelope plain = envelope;
+        if (envelope.Encrypted)
+        {
+            if (string.IsNullOrEmpty(password))
+                throw new InvalidOperationException("云端数据已加密，请设置同步密码");
+            if (envelope.Salt == null || envelope.Nonce == null
+                || envelope.Tag == null || envelope.Data == null)
+                throw new InvalidOperationException("云端数据格式错误：加密字段不完整");
+
+            var plaintextBytes = DecryptAesGcm(
+                Convert.FromBase64String(envelope.Salt),
+                Convert.FromBase64String(envelope.Nonce),
+                Convert.FromBase64String(envelope.Tag),
+                Convert.FromBase64String(envelope.Data),
+                password);
+            plain = JsonSerializer.Deserialize<ExportEnvelope>(plaintextBytes, JsonOpts)
+                    ?? new ExportEnvelope();
+        }
+
+        var dtos      = plain.Servers   ?? throw new InvalidOperationException("云端数据缺少 servers 字段");
+        var proxyDtos = plain.Proxies   ?? new List<ProxyExportDto>();
+
+        var servers = dtos.Select(d =>
+        {
+            var proto       = Enum.TryParse<ServerProtocol>(d.Protocol, out var p) ? p : ServerProtocol.RDP;
+            int defaultPort = proto == ServerProtocol.SSH ? 22 : proto == ServerProtocol.Telnet ? 23 : 3389;
+            return new ServerInfo
+            {
+                Name              = d.Name,
+                IP                = d.IP,
+                Port              = d.Port > 0 ? d.Port : defaultPort,
+                Username          = d.Username,
+                Password          = d.Password,
+                Description       = d.Description,
+                Group             = d.Group,
+                Protocol          = proto,
+                SshPrivateKeyPath = d.SshPrivateKeyPath,
+                SocksProxyId      = d.SocksProxyId,
+                SocksProxyName    = d.SocksProxyName
             };
         }).ToList();
 
-        AppLogger.Info($"imported {result.Count} servers from {filePath}");
-        return result;
+        var proxies = proxyDtos.Select(p => new SocksProxyEntry
+        {
+            Id              = p.Id,
+            Name            = p.Name,
+            Host            = p.Host,
+            Port            = p.Port,
+            Username        = p.Username,
+            Password        = p.Password,
+            UseTls          = p.UseTls,
+            TlsServerName   = p.TlsServerName,
+            TlsPinnedSha256 = p.TlsPinnedSha256
+        }).ToList();
+        foreach (var proxy in proxies) proxy.EnsureId();
+
+        return new ImportResult { Servers = servers, Proxies = proxies };
     }
 
     // ── AES-256-GCM ──────────────────────────────────────────────────────────

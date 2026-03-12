@@ -110,7 +110,7 @@
                      Background="#313244" Foreground="#CDD6F4"
                      BorderBrush="#45475A" BorderThickness="1"
                      FontSize="12" Padding="6,4"
-                     DisplayMemberPath="Name"
+                     DisplayMemberPath="DisplayName"
                      SelectionChanged="ProxyListBox_SelectionChanged"/>
 
             <StackPanel Grid.Column="1" VerticalAlignment="Top" Margin="10,0,0,0">
@@ -154,7 +154,7 @@
                 </Grid>
 
                 <!-- 用户名 + 密码 -->
-                <Grid>
+                <Grid Margin="0,0,0,10">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="52"/>
                         <ColumnDefinition Width="*"/>
@@ -168,6 +168,34 @@
                     <PasswordBox Grid.Column="4" x:Name="PasswordBox" Style="{StaticResource PI}"
                                  GotKeyboardFocus="PasswordBox_GotFocus"/>
                 </Grid>
+
+                <!-- TLS 配置 -->
+                <StackPanel>
+                    <CheckBox x:Name="UseTlsBox"
+                              Content="通过 TLS 连接代理服务端"
+                              Foreground="#CDD6F4"
+                              Margin="0,0,0,8"/>
+                    <Grid Margin="0,0,0,8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="72"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0" Text="证书名称" Style="{StaticResource RL}"/>
+                        <TextBox Grid.Column="1" x:Name="TlsServerNameBox" Style="{StaticResource TI}"
+                                 ToolTip="可选。用于 TLS 主机名校验 / SNI，留空时默认使用代理主机地址"/>
+                    </Grid>
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="72"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0" Text="SHA256" Style="{StaticResource RL}"/>
+                        <TextBox Grid.Column="1" x:Name="TlsPinnedSha256Box" Style="{StaticResource TI}"
+                                 ToolTip="可选。填写服务端证书 SHA256 指纹后，将按指纹固定证书"/>
+                    </Grid>
+                    <TextBlock Style="{StaticResource RH}" Margin="0,8,0,0"
+                               Text="启用 TLS 后，默认会校验证书；若使用自签证书，可填写 SHA256 指纹进行固定。"/>
+                </StackPanel>
             </StackPanel>
         </Border>
 

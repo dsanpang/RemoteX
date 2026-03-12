@@ -1,9 +1,10 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
 
-using MessageBox = System.Windows.MessageBox;
+
 
 namespace RemoteX;
 
@@ -22,11 +23,15 @@ public partial class ProxyManagerWindow : Window
     {
         _list = _settings.SocksProxies.Select(p => new SocksProxyEntry
         {
+            Id       = p.Id,
             Name     = p.Name,
             Host     = p.Host,
             Port     = p.Port,
             Username = p.Username,
-            Password = p.Password
+            Password = p.Password,
+            UseTls   = p.UseTls,
+            TlsServerName = p.TlsServerName,
+            TlsPinnedSha256 = p.TlsPinnedSha256
         }).ToList();
 
         ProxyListBox.ItemsSource = _list;
@@ -69,6 +74,14 @@ public partial class ProxyManagerWindow : Window
             NameBox.Focus();
             return;
         }
+        if (_list.Any(x => !ReferenceEquals(x, p) &&
+                           string.Equals(x.Name, name, StringComparison.OrdinalIgnoreCase)))
+        {
+            ShowError("代理名称已存在，请使用不同名称");
+            NameBox.Focus();
+            NameBox.SelectAll();
+            return;
+        }
         if (string.IsNullOrEmpty(host))
         {
             ShowError("主机地址不能为空");
@@ -87,6 +100,9 @@ public partial class ProxyManagerWindow : Window
         p.Port     = port;
         p.Username = UsernameBox.Text.Trim();
         p.Password = PasswordBox.Password;
+        p.UseTls = UseTlsBox.IsChecked == true;
+        p.TlsServerName = TlsServerNameBox.Text.Trim();
+        p.TlsPinnedSha256 = TlsPinnedSha256Box.Text.Trim();
 
         ProxyListBox.Items.Refresh();
         Persist();
@@ -114,6 +130,9 @@ public partial class ProxyManagerWindow : Window
         PortBox.Text         = p.Port.ToString();
         UsernameBox.Text     = p.Username;
         PasswordBox.Password = p.Password;
+        UseTlsBox.IsChecked  = p.UseTls;
+        TlsServerNameBox.Text = p.TlsServerName;
+        TlsPinnedSha256Box.Text = p.TlsPinnedSha256;
     }
 
     private void ClearForm()
@@ -123,17 +142,24 @@ public partial class ProxyManagerWindow : Window
         PortBox.Text         = "1080";
         UsernameBox.Text     = "";
         PasswordBox.Password = "";
+        UseTlsBox.IsChecked  = false;
+        TlsServerNameBox.Text = "";
+        TlsPinnedSha256Box.Text = "";
     }
 
     private void Persist()
     {
         _settings.SocksProxies = _list.Select(x => new SocksProxyEntry
         {
+            Id       = x.Id,
             Name     = x.Name,
             Host     = x.Host,
             Port     = x.Port,
             Username = x.Username,
-            Password = x.Password
+            Password = x.Password,
+            UseTls   = x.UseTls,
+            TlsServerName = x.TlsServerName,
+            TlsPinnedSha256 = x.TlsPinnedSha256
         }).ToList();
         _settings.Save();
     }
@@ -152,5 +178,5 @@ public partial class ProxyManagerWindow : Window
     }
 
     private void ShowError(string msg)
-        => MessageBox.Show(msg, "输入错误", MessageBoxButton.OK, MessageBoxImage.Warning);
+        => AppMsg.Show(this, msg, "输入错误", AppMsgIcon.Warning);
 }

@@ -4,7 +4,7 @@ using System.Windows.Forms;
 using System.Windows.Threading;
 
 using Application = System.Windows.Application;
-using MessageBox  = System.Windows.MessageBox;
+
 
 namespace RemoteX
 {
@@ -33,9 +33,9 @@ namespace RemoteX
             DispatcherUnhandledException += (_, args) =>
             {
                 AppLogger.Error("dispatcher unhandled exception", args.Exception);
-                MessageBox.Show(
+                AppMsg.Show(_mainWindow,
                     $"发生未处理的异常：\n{args.Exception.Message}",
-                    "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+                    "错误", AppMsgIcon.Error);
                 args.Handled = true;
             };
 

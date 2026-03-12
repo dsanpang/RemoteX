@@ -2,10 +2,10 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="设置"
-        Width="540"
-        Height="700"
+        Width="560"
+        Height="860"
         MinHeight="420"
-        MaxHeight="920"
+        MaxHeight="1100"
         WindowStartupLocation="CenterOwner"
         ResizeMode="CanResizeWithGrip"
         Background="#1E1E2E"
@@ -173,6 +173,27 @@
             </StackPanel>
         </Border>
 
+        <!-- ── 终端连接 ── -->
+        <Border Style="{StaticResource SectionBlock}">
+            <StackPanel>
+                <DockPanel Style="{StaticResource SectionTitle}">
+                    <Border DockPanel.Dock="Left" Width="3" CornerRadius="2" Background="#F9E2AF" Margin="0,1,10,1"/>
+                    <TextBlock Text="终端连接" Foreground="#F9E2AF" FontSize="11" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                </DockPanel>
+                <Grid Margin="0,0,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Grid.Column="0" VerticalAlignment="Center" Margin="0,0,16,0">
+                        <TextBlock Text="SSH/Telnet 超时（秒）" Style="{StaticResource RL}"/>
+                        <TextBlock Text="终端建立连接时的最长等待时间（3~120 秒）" Style="{StaticResource RH}"/>
+                    </StackPanel>
+                    <TextBox x:Name="TerminalConnectTimeoutBox" Grid.Column="1" Style="{StaticResource NI}"/>
+                </Grid>
+            </StackPanel>
+        </Border>
+
 
         <!-- ── 历史记录 ── -->
         <Border Style="{StaticResource SectionBlock}">
@@ -192,6 +213,130 @@
                     </StackPanel>
                     <TextBox x:Name="MaxRecentBox" Grid.Column="1" Style="{StaticResource NI}"/>
                 </Grid>
+            </StackPanel>
+        </Border>
+
+        <!-- ── 云同步 ── -->
+        <Border Style="{StaticResource SectionBlock}">
+            <StackPanel>
+                <DockPanel Style="{StaticResource SectionTitle}">
+                    <Border DockPanel.Dock="Left" Width="3" CornerRadius="2" Background="#74C7EC" Margin="0,1,10,1"/>
+                    <CheckBox x:Name="SyncEnabledCheck"
+                              Content="启用云同步"
+                              Foreground="#74C7EC"
+                              FontSize="11" FontWeight="SemiBold"
+                              VerticalAlignment="Center"
+                              Checked="SyncEnabledCheck_Changed"
+                              Unchecked="SyncEnabledCheck_Changed"/>
+                </DockPanel>
+                <TextBlock Text="支持 Alibaba Cloud OSS、AWS S3、MinIO、Cloudflare R2 等 S3 兼容存储。数据以 AES-256-GCM 加密后存入云端。"
+                           Style="{StaticResource RH}" Margin="0,0,0,14"/>
+
+                <StackPanel x:Name="SyncConfigPanel">
+                    <!-- 终端节点 -->
+                    <Grid Style="{StaticResource SettingRow}">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="72"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="终端节点" Style="{StaticResource RL}"/>
+                        <StackPanel Grid.Column="1">
+                            <TextBox x:Name="SyncEndpointBox" Style="{StaticResource TI}"/>
+                            <TextBlock Text="仅主机名，例：oss-cn-hangzhou.aliyuncs.com  |  s3.us-east-1.amazonaws.com  |  minio.example.com:9000"
+                                       Style="{StaticResource RH}" Margin="0,3,0,0"/>
+                        </StackPanel>
+                    </Grid>
+                    <!-- Region + 路径模式 -->
+                    <Grid Style="{StaticResource SettingRow}">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="72"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="Region" Style="{StaticResource RL}"/>
+                        <TextBox x:Name="SyncRegionBox" Grid.Column="1" Style="{StaticResource TI}" Margin="0,0,12,0"/>
+                        <StackPanel Grid.Column="2" Orientation="Horizontal">
+                            <CheckBox x:Name="SyncPathStyleCheck"
+                                      Content="路径模式（MinIO）"
+                                      Foreground="#6C7086" FontSize="11"
+                                      VerticalAlignment="Center" Margin="0,0,12,0"/>
+                            <CheckBox x:Name="SyncIgnoreSslCheck"
+                                      Content="跳过 SSL 验证"
+                                      Foreground="#F38BA8" FontSize="11"
+                                      VerticalAlignment="Center"
+                                      ToolTip="忽略证书错误（自签名证书或企业代理时使用，存在安全风险）"/>
+                        </StackPanel>
+                    </Grid>
+                    <!-- 存储桶 -->
+                    <Grid Style="{StaticResource SettingRow}">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="72"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="存储桶" Style="{StaticResource RL}"/>
+                        <TextBox x:Name="SyncBucketBox" Grid.Column="1" Style="{StaticResource TI}"/>
+                    </Grid>
+                    <!-- 访问密钥 ID -->
+                    <Grid Style="{StaticResource SettingRow}">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="72"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="AccessKey" Style="{StaticResource RL}"/>
+                        <TextBox x:Name="SyncAccessKeyBox" Grid.Column="1" Style="{StaticResource TI}"/>
+                    </Grid>
+                    <!-- 访问密钥 Secret -->
+                    <Grid Style="{StaticResource SettingRow}">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="72"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="SecretKey" Style="{StaticResource RL}"/>
+                        <PasswordBox x:Name="SyncSecretKeyBox" Grid.Column="1"
+                                     Height="34" FontSize="13"
+                                     Background="#313244" Foreground="#CDD6F4"
+                                     BorderBrush="#45475A" BorderThickness="1"
+                                     Padding="8,0" VerticalContentAlignment="Center"/>
+                    </Grid>
+                    <!-- 对象路径 -->
+                    <Grid Style="{StaticResource SettingRow}">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="72"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="对象路径" Style="{StaticResource RL}"/>
+                        <TextBox x:Name="SyncObjectKeyBox" Grid.Column="1" Style="{StaticResource TI}"/>
+                    </Grid>
+                    <!-- 同步密码 -->
+                    <Grid Style="{StaticResource SettingRow}">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="72"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="同步密码" Style="{StaticResource RL}"/>
+                        <PasswordBox x:Name="SyncPasswordBox" Grid.Column="1"
+                                     Height="34" FontSize="13"
+                                     Background="#313244" Foreground="#CDD6F4"
+                                     BorderBrush="#45475A" BorderThickness="1"
+                                     Padding="8,0" VerticalContentAlignment="Center"/>
+                    </Grid>
+                    <TextBlock Text="所有设备使用相同密码对同步数据加密，密码丢失则云端数据无法恢复"
+                               Style="{StaticResource RH}" Margin="72,0,0,12"/>
+                    <!-- 测试连接 -->
+                    <DockPanel>
+                        <Button x:Name="SyncTestBtn" DockPanel.Dock="Left"
+                                Content="测试连接" Width="88" Height="30" Margin="72,0,12,0"
+                                Style="{StaticResource DlgSecondaryBtn}"
+                                Click="SyncTestBtn_Click"/>
+                        <TextBlock x:Name="SyncStatusText"
+                                   Foreground="#6C7086" FontSize="11"
+                                   VerticalAlignment="Center" TextWrapping="Wrap"/>
+                    </DockPanel>
+                    <!-- 最近同步时间 -->
+                    <TextBlock x:Name="SyncLastTimeText"
+                               Foreground="#6C7086" FontSize="11"
+                               Margin="72,8,0,0"/>
+                </StackPanel>
             </StackPanel>
         </Border>
 

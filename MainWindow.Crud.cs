@@ -6,7 +6,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 
-using MessageBox  = System.Windows.MessageBox;
+
 using MouseEventArgs  = System.Windows.Input.MouseEventArgs;
 using DragEventArgs   = System.Windows.DragEventArgs;
 using DragDropEffects = System.Windows.DragDropEffects;
@@ -31,7 +31,9 @@ namespace RemoteX
         private async void AddServerButton_Click(object sender, RoutedEventArgs e)
         {
             var server = new ServerInfo { Port = _appSettings.DefaultPort };
-            var dlg    = new ServerEditWindow(server, isNew: true, _appSettings.SocksProxies?.Select(p => p.Name).ToList()) { Owner = this };
+            var dlg    = new ServerEditWindow(server, isNew: true,
+                _appSettings.SocksProxies,
+                ExistingGroups()) { Owner = this };
             if (dlg.ShowDialog() != true) return;
 
             // 追加到列表末尾，SortOrder = max + 1
@@ -56,7 +58,9 @@ namespace RemoteX
         {
             if (ServerList.SelectedItem is not ServerInfo server) return;
 
-            var dlg = new ServerEditWindow(server, isNew: false, _appSettings.SocksProxies?.Select(p => p.Name).ToList()) { Owner = this };
+            var dlg = new ServerEditWindow(server, isNew: false,
+                _appSettings.SocksProxies,
+                ExistingGroups()) { Owner = this };
             if (dlg.ShowDialog() != true) return;
 
             await _serverRepository.UpdateAsync(server);
@@ -80,12 +84,10 @@ namespace RemoteX
         {
             if (ServerList.SelectedItem is not ServerInfo server) return;
 
-            var result = MessageBox.Show(
-            $"确定要删除服务器「{server.Name}」吗？",
-                "删除确认",
-                MessageBoxButton.YesNo,
-                MessageBoxImage.Question);
-            if (result != MessageBoxResult.Yes) return;
+            var result = AppMsg.Show(this,
+                $"确定要删除服务器「{server.Name}」吗？",
+                "删除确认", AppMsgIcon.Question, AppMsgButton.YesNo);
+            if (result != AppMsgResult.Yes) return;
 
             RemoveTabSession(server.Id);
             await _serverRepository.DeleteAsync(server);
@@ -180,6 +182,13 @@ namespace RemoteX
 
             ServerList.SelectedItem = source;
         }
+
+        private List<string> ExistingGroups() =>
+            _servers.Select(s => s.Group)
+                    .Where(g => !string.IsNullOrWhiteSpace(g))
+                    .Distinct()
+                    .OrderBy(g => g)
+                    .ToList();
 
         private ServerInfo? GetDropTarget(DragEventArgs e)
         {

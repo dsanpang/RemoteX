@@ -4,21 +4,36 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 
-using MessageBox = System.Windows.MessageBox;
+
 
 namespace RemoteX;
 
 public partial class ServerEditWindow : Window
 {
     private readonly ServerInfo _server;
-    private readonly List<string> _socksProxyNames = new();
+    private readonly List<SocksProxyEntry> _socksProxies = new();
+    private readonly List<string> _existingGroups   = new();
 
-    public ServerEditWindow(ServerInfo server, bool isNew, IEnumerable<string>? socksProxyNames = null)
+    public ServerEditWindow(ServerInfo server, bool isNew,
+        IEnumerable<SocksProxyEntry>? socksProxies  = null,
+        IEnumerable<string>? existingGroups   = null)
     {
         InitializeComponent();
         _server = server;
-        if (socksProxyNames != null)
-            _socksProxyNames.AddRange(socksProxyNames);
+        if (socksProxies != null)
+            _socksProxies.AddRange(socksProxies.Select(p => new SocksProxyEntry
+            {
+                Id = p.Id,
+                Name = p.Name,
+                Host = p.Host,
+                Port = p.Port,
+                Username = p.Username,
+                Password = p.Password,
+                UseTls = p.UseTls,
+                TlsServerName = p.TlsServerName,
+                TlsPinnedSha256 = p.TlsPinnedSha256
+            }));
+        if (existingGroups  != null)  _existingGroups.AddRange(existingGroups);
         Title = isNew ? "新增服务器" : "编辑服务器";
     }
 
@@ -38,19 +53,31 @@ public partial class ServerEditWindow : Window
         PortBox.Text             = _server.Port.ToString();
         UsernameBox.Text         = _server.Username;
         PasswordBox.Password     = _server.Password;
+        GroupBox.Items.Clear();
+        foreach (var g in _existingGroups)
+            GroupBox.Items.Add(g);
         GroupBox.Text            = _server.Group;
         SshKeyBox.Text           = _server.SshPrivateKeyPath;
         DescriptionBox.Text      = _server.Description;
         SocksProxyCombo.Items.Clear();
+        SocksProxyCombo.DisplayMemberPath = nameof(SocksProxyEntry.DisplayName);
         SocksProxyCombo.Items.Add("直连");
-        foreach (var n in _socksProxyNames)
-            SocksProxyCombo.Items.Add(n);
-        if (string.IsNullOrEmpty(_server.SocksProxyName))
+        foreach (var proxy in _socksProxies)
+            SocksProxyCombo.Items.Add(proxy);
+
+        if (string.IsNullOrEmpty(_server.SocksProxyId) && string.IsNullOrEmpty(_server.SocksProxyName))
             SocksProxyCombo.SelectedIndex = 0;
         else
         {
-            var idx = _socksProxyNames.IndexOf(_server.SocksProxyName);
-            SocksProxyCombo.SelectedIndex = idx >= 0 ? idx + 1 : 0;
+            var match = _socksProxies.FirstOrDefault(p =>
+                (!string.IsNullOrWhiteSpace(_server.SocksProxyId) &&
+                 string.Equals(p.Id, _server.SocksProxyId, System.StringComparison.OrdinalIgnoreCase)) ||
+                (!string.IsNullOrWhiteSpace(_server.SocksProxyName) &&
+                 string.Equals(p.Name, _server.SocksProxyName, System.StringComparison.OrdinalIgnoreCase)));
+            if (match != null)
+                SocksProxyCombo.SelectedItem = match;
+            else
+                SocksProxyCombo.SelectedIndex = 0;
         }
 
         ApplyProtocolUi(_server.Protocol);
@@ -120,16 +147,14 @@ public partial class ServerEditWindow : Window
         if (string.IsNullOrWhiteSpace(NameBox.Text) ||
             string.IsNullOrWhiteSpace(IpBox.Text))
         {
-            MessageBox.Show("请输入 IP 地址或主机名", "提示",
-                MessageBoxButton.OK, MessageBoxImage.Warning);
+            AppMsg.Show(this, "请输入 IP 地址或主机名", "提示", AppMsgIcon.Warning);
             IpBox.Focus();
             return;
         }
 
         if (!int.TryParse(PortBox.Text, out int port) || port < 1 || port > 65535)
         {
-            MessageBox.Show("端口号必须在 1-65535 之间", "提示",
-                MessageBoxButton.OK, MessageBoxImage.Warning);
+            AppMsg.Show(this, "端口号必须在 1-65535 之间", "提示", AppMsgIcon.Warning);
             PortBox.Focus();
             return;
         }
@@ -147,7 +172,16 @@ public partial class ServerEditWindow : Window
         _server.Group             = GroupBox.Text.Trim();
         _server.SshPrivateKeyPath = SshKeyBox.Text.Trim();
         _server.Description       = DescriptionBox.Text;
-        _server.SocksProxyName    = SocksProxyCombo.SelectedItem is string s && s != "直连" ? s : "";
+        if (SocksProxyCombo.SelectedItem is SocksProxyEntry proxy)
+        {
+            _server.SocksProxyId = proxy.Id;
+            _server.SocksProxyName = proxy.Name;
+        }
+        else
+        {
+            _server.SocksProxyId = "";
+            _server.SocksProxyName = "";
+        }
 
         DialogResult = true;
         Close();

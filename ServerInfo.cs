@@ -80,6 +80,9 @@ public class ServerInfo : INotifyPropertyChanged
     public string SshPrivateKeyPath { get => _sshPrivateKeyPath; set => Set(ref _sshPrivateKeyPath, value); }
 
     /// <summary>通过 SOCKS 连接时使用的代理名称（来自设置中的代理列表）；空表示直连。</summary>
+    private string _socksProxyId = "";
+    public string SocksProxyId { get => _socksProxyId; set => Set(ref _socksProxyId, value ?? ""); }
+
     private string _socksProxyName = "";
     public string SocksProxyName { get => _socksProxyName; set => Set(ref _socksProxyName, value ?? ""); }
 

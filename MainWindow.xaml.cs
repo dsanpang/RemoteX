@@ -9,7 +9,7 @@ using System.Windows.Media;
 using System.Windows.Media.Imaging;
 
 using Color       = System.Windows.Media.Color;
-using MessageBox  = System.Windows.MessageBox;
+
 using Application = System.Windows.Application;
 using Orientation = System.Windows.Controls.Orientation;
 using Button      = System.Windows.Controls.Button;
@@ -29,9 +29,12 @@ namespace RemoteX
         private AppUiState  _uiState    = new();
         private AppSettings _appSettings = null!;
 
-        // 多会话
-        private readonly Dictionary<int, ITabSession> _tabSessions = new();
-        private int _activeServerId;
+        // 多会话（键为 instanceId，允许同一服务器开多个会话）
+        private readonly Dictionary<long, ITabSession> _tabSessions = new();
+        private long _activeTabId;
+
+        // 批量健康检测取消令牌
+        private CancellationTokenSource? _healthCheckCts;
 
         // 防抖计时器
         private readonly System.Windows.Threading.DispatcherTimer _resizeTimer = new()
@@ -53,9 +56,10 @@ namespace RemoteX
         private bool _syncDisplaySettingsRequested;
         private WindowState _lastWindowState;
 
-        // 侧边栏
+        // 侧边栏 / 功能面板
         private bool _isSidebarCollapsed;
         private GridLength _sidebarExpandedWidth = new(268);
+        private int _activePanelIndex = 0;  // 0=Servers 1=Recent 2=Forwards 3=Commands 4=Sftp
 
         // 拖拽排序
         private System.Windows.Point _dragStartPoint;
@@ -124,12 +128,15 @@ namespace RemoteX
                 await Task.WhenAll(LoadServersAsync(), InitTerminalWebViewAsync());
                 RestoreLastSelectedServer();
                 RefreshRecentSection();
+                await Task.WhenAll(
+                    LoadPortForwardsAsync(),
+                    LoadQuickCommandsAsync()
+                );
             }
             catch (Exception ex)
             {
                 AppLogger.Error("main window initialization failed", ex);
-                MessageBox.Show("初始化失败 " + ex.Message, "错误",
-                    MessageBoxButton.OK, MessageBoxImage.Error);
+                AppMsg.Show(this, "初始化失败 " + ex.Message, "错误", AppMsgIcon.Error);
             }
         }
 
@@ -138,6 +145,16 @@ namespace RemoteX
             SaveUiState();
             _resizeTimer.Stop();
             _isHealthChecking = _isBulkHealthChecking = _syncDisplaySettingsRequested = false;
+            _healthCheckCts?.Cancel();
+            _healthCheckCts?.Dispose();
+            DisposeAllConnectTimeouts();
+            // 取消订阅 WebView2 消息事件，防止窗口关闭后事件回调持有对象引用
+            try
+            {
+                if (_webViewReady && TerminalWebView.CoreWebView2 != null)
+                    TerminalWebView.CoreWebView2.WebMessageReceived -= OnTerminalWebMessageReceived;
+            }
+            catch { }
             try
             {
                 foreach (var tab in _tabSessions.Values)
@@ -178,7 +195,16 @@ namespace RemoteX
             }
 
             _sidebarExpandedWidth = new GridLength(Math.Max(180, _uiState.SidebarExpandedWidth));
+            _activePanelIndex = _uiState.ActivePanelIndex;
             SetSidebarCollapsed(_uiState.IsSidebarCollapsed, persistState: false, requestDisplaySync: false);
+
+            // Restore active panel visibility and highlight without toggling
+            FP_Servers.Visibility  = _activePanelIndex == 0 ? Visibility.Visible : Visibility.Collapsed;
+            FP_Recent.Visibility   = _activePanelIndex == 1 ? Visibility.Visible : Visibility.Collapsed;
+            FP_Forwards.Visibility = _activePanelIndex == 2 ? Visibility.Visible : Visibility.Collapsed;
+            FP_Commands.Visibility = _activePanelIndex == 3 ? Visibility.Visible : Visibility.Collapsed;
+            FP_Sftp.Visibility     = _activePanelIndex == 4 ? Visibility.Visible : Visibility.Collapsed;
+            UpdateActivityBarHighlight(_isSidebarCollapsed ? -1 : _activePanelIndex);
 
             if (_uiState.IsMaximized)
                 WindowState = WindowState.Maximized;
@@ -204,6 +230,7 @@ namespace RemoteX
                 _uiState.IsSidebarCollapsed   = _isSidebarCollapsed;
                 _uiState.SidebarExpandedWidth = Math.Max(180, _sidebarExpandedWidth.Value);
                 _uiState.LastSelectedServerId = ServerList.SelectedItem is ServerInfo s ? s.Id : 0;
+                _uiState.ActivePanelIndex     = _activePanelIndex;
                 _uiStateStore.Save(_uiState);
             }
             catch (Exception ex)
@@ -230,21 +257,21 @@ namespace RemoteX
         {
             if (collapsed)
             {
-                if (SidebarColumn.Width.Value > 0)
-                    _sidebarExpandedWidth = SidebarColumn.Width;
-                SidebarColumn.Width    = new GridLength(0);
-                _isSidebarCollapsed    = true;
-                ToggleSidebarIcon.Text = "▶";
-                ToggleSidebarButton.ToolTip = "展开侧边栏";
+                if (FeaturePanelColumn.Width.Value > 0)
+                    _sidebarExpandedWidth = FeaturePanelColumn.Width;
+                FeaturePanelColumn.Width = new GridLength(0);
+                _isSidebarCollapsed      = true;
+                ToggleSidebarIcon.Text   = "▶";
+                ToggleSidebarButton.ToolTip = "展开功能面板";
             }
             else
             {
                 if (_sidebarExpandedWidth.Value <= 0)
                     _sidebarExpandedWidth = new GridLength(268);
-                SidebarColumn.Width    = _sidebarExpandedWidth;
-                _isSidebarCollapsed    = false;
-                ToggleSidebarIcon.Text = "◀";
-                ToggleSidebarButton.ToolTip = "收起侧边栏";
+                FeaturePanelColumn.Width = _sidebarExpandedWidth;
+                _isSidebarCollapsed      = false;
+                ToggleSidebarIcon.Text   = "◀";
+                ToggleSidebarButton.ToolTip = "收起功能面板";
             }
 
             if (persistState)
@@ -262,7 +289,70 @@ namespace RemoteX
         }
 
         private void ToggleSidebarButton_Click(object sender, RoutedEventArgs e)
-            => SetSidebarCollapsed(!_isSidebarCollapsed);
+        {
+            var collapsing = !_isSidebarCollapsed;
+            SetSidebarCollapsed(collapsing);
+            UpdateActivityBarHighlight(collapsing ? -1 : _activePanelIndex);
+        }
+
+        private void ExitSplitButton_Click(object sender, RoutedEventArgs e)
+        {
+            ExitSplitMode();
+        }
+
+        // 活动栏面板切换
+
+        private void SwitchActivityPanel(int panelIndex)
+        {
+            // 点击已激活面板且未折叠 → 折叠（VS Code 行为）
+            if (_activePanelIndex == panelIndex && !_isSidebarCollapsed)
+            {
+                SetSidebarCollapsed(true);
+                UpdateActivityBarHighlight(-1);
+                return;
+            }
+            if (_isSidebarCollapsed) SetSidebarCollapsed(false);
+            _activePanelIndex = panelIndex;
+            FP_Servers.Visibility  = panelIndex == 0 ? Visibility.Visible : Visibility.Collapsed;
+            FP_Recent.Visibility   = panelIndex == 1 ? Visibility.Visible : Visibility.Collapsed;
+            FP_Forwards.Visibility = panelIndex == 2 ? Visibility.Visible : Visibility.Collapsed;
+            FP_Commands.Visibility = panelIndex == 3 ? Visibility.Visible : Visibility.Collapsed;
+            FP_Sftp.Visibility     = panelIndex == 4 ? Visibility.Visible : Visibility.Collapsed;
+            if (panelIndex == 1) RefreshRecentPanel();
+            if (panelIndex == 2) RefreshForwardsPanel();
+            if (panelIndex == 3) RefreshCommandsPanel();
+            if (panelIndex == 4) RefreshSftpPanel();
+            UpdateActivityBarHighlight(panelIndex);
+        }
+
+        private void UpdateActivityBarHighlight(int activeIdx)
+        {
+            var buttons = new[] { ActivityBtn_Servers, ActivityBtn_Recent, ActivityBtn_Forwards, ActivityBtn_Commands, ActivityBtn_Sftp };
+            var accents = new[] { ActivityAccent_Servers, ActivityAccent_Recent, ActivityAccent_Forwards, ActivityAccent_Commands, ActivityAccent_Sftp };
+            for (int i = 0; i < buttons.Length; i++)
+            {
+                var isActive = i == activeIdx;
+                buttons[i].Foreground = isActive ? ColBlue : ColOverlay0;
+                accents[i].Visibility = isActive ? Visibility.Visible : Visibility.Collapsed;
+            }
+        }
+
+        private void ActivityBtn_Servers_Click(object sender, RoutedEventArgs e)  => SwitchActivityPanel(0);
+        private void ActivityBtn_Recent_Click(object sender, RoutedEventArgs e)   => SwitchActivityPanel(1);
+        private void ActivityBtn_Forwards_Click(object sender, RoutedEventArgs e) => SwitchActivityPanel(2);
+        private void ActivityBtn_Commands_Click(object sender, RoutedEventArgs e) => SwitchActivityPanel(3);
+        private void ActivityBtn_Sftp_Click(object sender, RoutedEventArgs e)     => SwitchActivityPanel(4);
+        private void ActivityBtn_Settings_Click(object sender, RoutedEventArgs e) => SettingsButton_Click(sender, e);
+        private void ActivityBtn_Sync_Click(object sender, RoutedEventArgs e)
+        {
+            var btn = (Button)sender;
+            if (btn.ContextMenu is { } menu)
+            {
+                menu.PlacementTarget = btn;
+                menu.Placement = System.Windows.Controls.Primitives.PlacementMode.Right;
+                menu.IsOpen = true;
+            }
+        }
 
         // RDP 全屏 (F11)
 
@@ -280,7 +370,8 @@ namespace RemoteX
                 _preFullScreenSidebarCollapsed = _isSidebarCollapsed;
                 _preFullScreenWindowState      = WindowState;
 
-                // 收起侧边栏、工具栏、状态栏
+                // 收起活动栏、功能面板、工具栏、状态栏
+                ActivityBarColumn.Width = new GridLength(0);
                 SetSidebarCollapsed(true, persistState: false, requestDisplaySync: false);
                 ToolbarRow.Height   = new GridLength(0);
                 StatusBarRow.Height = new GridLength(0);
@@ -297,8 +388,9 @@ namespace RemoteX
                 WindowStyle = System.Windows.WindowStyle.SingleBorderWindow;
                 WindowState = _preFullScreenWindowState;
 
+                ActivityBarColumn.Width = new GridLength(40);
                 ToolbarRow.Height   = new GridLength(46);
-                StatusBarRow.Height = new GridLength(34);
+                StatusBarRow.Height = new GridLength(28);
 
                 if (!_preFullScreenSidebarCollapsed)
                     SetSidebarCollapsed(false, persistState: false, requestDisplaySync: false);
@@ -461,10 +553,10 @@ namespace RemoteX
 
             // 内容区域可见性由 SwitchToSession 管理，此处只更新文字
             StatusText.Text = current.IsConnected
-                ? $"已连接 {current.Address}"
-                : $"已断开  {current.Address}";
+                ? $"已连接 {current.Server.Name}"
+                : $"已断开  {current.Server.Name}";
             DescriptionText.Text = current.Server.Description ?? "";
-            Title = $"RemoteX — {current.Server.Name}  ({current.Address})";
+            Title = $"RemoteX — {current.Server.Name}";
         }
 
         // 搜索（防抖）
@@ -535,12 +627,22 @@ namespace RemoteX
                 return;
             }
 
-            // Ctrl+W：关闭当前 RDP 标签
+            // Ctrl+W：关闭当前标签
             if (e.Key == Key.W && Keyboard.Modifiers == ModifierKeys.Control)
             {
                 var current = GetCurrentTabSession();
                 if (current != null)
-                    RequestRemoveTabSession(current.Server.Id);
+                    RequestRemoveTabSession(current.InstanceId);
+                e.Handled = true;
+                return;
+            }
+
+            // Ctrl+T：新建会话（复制当前连接的服务器）
+            if (e.Key == Key.T && Keyboard.Modifiers == ModifierKeys.Control)
+            {
+                var current = GetCurrentTabSession();
+                if (current != null)
+                    _ = NewSessionAsync(current.Server);
                 e.Handled = true;
                 return;
             }
@@ -613,7 +715,7 @@ namespace RemoteX
         }
 
         private ITabSession? GetCurrentTabSession()
-            => _activeServerId > 0 && _tabSessions.TryGetValue(_activeServerId, out var t) ? t : null;
+            => _activeTabId > 0 && _tabSessions.TryGetValue(_activeTabId, out var t) ? t : null;
 
         private void RestoreSelectionByServerId(int id)
         {

@@ -14,6 +14,7 @@ internal sealed class AppUiState
     public bool IsSidebarCollapsed { get; set; }
     public double SidebarExpandedWidth { get; set; } = 268;
     public int LastSelectedServerId { get; set; }
+    public int ActivePanelIndex { get; set; } = 0;
 }
 
 internal sealed class UiStateStore
@@ -76,6 +77,7 @@ internal sealed class UiStateStore
         if (!IsFinite(state.WindowLeft)) state.WindowLeft = double.NaN;
         if (!IsFinite(state.WindowTop)) state.WindowTop = double.NaN;
         if (state.LastSelectedServerId < 0) state.LastSelectedServerId = 0;
+        state.ActivePanelIndex = Math.Clamp(state.ActivePanelIndex, 0, 4);
         return state;
     }
 

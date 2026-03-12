@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Net.Sockets;
 using System.Text;
 using System.Threading;
@@ -17,17 +18,28 @@ internal sealed class TerminalSessionService : IDisposable
     public event Action?         Connected;
     public event Action?         Disconnected;
 
+    // ── ZMODEM 回调（由 MainWindow.Terminal 注入）──────────────────────────────
+    /// <summary>传输进度文字，在非 UI 线程调用。</summary>
+    public Action<string>? ZmodemStatus;
+    /// <summary>文件接收完成，需弹 SaveFileDialog。在非 UI 线程调用。</summary>
+    public Action<string, byte[]>? ZmodemFileReceived;
+    /// <summary>需要上传文件，弹 OpenFileDialog。在非 UI 线程调用（必须内部 Dispatch）。</summary>
+    public Func<Task<(string Name, byte[] Data)>>? ZmodemRequestUpload;
+
     // ── SSH ──────────────────────────────────────────────────────────────────
     private SshClient?   _sshClient;
     private ShellStream? _shellStream;
 
     // ── Telnet ────────────────────────────────────────────────────────────────
     private TcpClient?     _telnetClient;
-    private NetworkStream? _telnetStream;
+    private Stream? _telnetStream;
+    private SocksTunnelConnection? _telnetTunnel;
 
     // 公共状态
     private CancellationTokenSource? _readCts;
     private bool _disposed;
+    private int _terminalCols = 80;
+    private int _terminalRows = 24;
 
     public bool IsConnected { get; private set; }
 
@@ -36,7 +48,7 @@ internal sealed class TerminalSessionService : IDisposable
     /// <summary>连接超时（秒），默认 15 s。</summary>
     public static int ConnectTimeoutSeconds { get; set; } = 15;
 
-    public async Task ConnectAsync(ServerInfo server)
+    public async Task ConnectAsync(ServerInfo server, SocksProxyEntry? proxy = null)
     {
         _readCts = new CancellationTokenSource();
 
@@ -46,9 +58,9 @@ internal sealed class TerminalSessionService : IDisposable
         try
         {
             if (server.Protocol == ServerProtocol.SSH)
-                await ConnectSshAsync(server, timeoutCts.Token).ConfigureAwait(false);
+                await ConnectSshAsync(server, proxy, timeoutCts.Token).ConfigureAwait(false);
             else
-                await ConnectTelnetAsync(server, timeoutCts.Token).ConfigureAwait(false);
+                await ConnectTelnetAsync(server, proxy, timeoutCts.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
         {
@@ -59,7 +71,7 @@ internal sealed class TerminalSessionService : IDisposable
 
     // ── SSH ───────────────────────────────────────────────────────────────────
 
-    private async Task ConnectSshAsync(ServerInfo server, CancellationToken timeoutCt)
+    private async Task ConnectSshAsync(ServerInfo server, SocksProxyEntry? proxy, CancellationToken timeoutCt)
     {
         AuthenticationMethod auth;
 
@@ -76,7 +88,15 @@ internal sealed class TerminalSessionService : IDisposable
             auth = new PasswordAuthenticationMethod(server.Username, server.Password ?? "");
         }
 
-        var connInfo = new ConnectionInfo(server.IP, server.Port, server.Username, auth)
+        var authMethods = new[] { auth };
+        var connInfo = proxy is { Host.Length: > 0 }
+            ? new ConnectionInfo(
+                server.IP, server.Port, server.Username,
+                ProxyTypes.Socks5, proxy.Host, proxy.Port,
+                string.IsNullOrWhiteSpace(proxy.Username) ? null : proxy.Username,
+                string.IsNullOrWhiteSpace(proxy.Password) ? null : proxy.Password,
+                authMethods)
+            : new ConnectionInfo(server.IP, server.Port, server.Username, authMethods)
         {
             Timeout = TimeSpan.FromSeconds(ConnectTimeoutSeconds)
         };
@@ -104,7 +124,11 @@ internal sealed class TerminalSessionService : IDisposable
         await Task.Run(() => _sshClient.Connect(), timeoutCt).ConfigureAwait(false);
 
         // 80 �?× 24 行，之后通过 Resize 更新实际大小
-        _shellStream = _sshClient.CreateShellStream("xterm-256color", 80, 24, 0, 0, 4096);
+        _shellStream = _sshClient.CreateShellStream(
+            "xterm-256color",
+            (uint)_terminalCols,
+            (uint)_terminalRows,
+            0, 0, 4096);
 
         IsConnected = true;
         Connected?.Invoke();
@@ -112,17 +136,37 @@ internal sealed class TerminalSessionService : IDisposable
         _ = Task.Run(() => ReadSshLoop(_readCts!.Token));
     }
 
+    // ZMODEM 魔法头：** CAN (B|A|C)  →  0x2A 0x2A 0x18 0x42/0x41/0x43
+    private static readonly byte[] s_zmodemMagic = { 0x2A, 0x2A, 0x18 };
+
     private void ReadSshLoop(CancellationToken ct)
     {
         var buffer = new byte[4096];
+
         try
         {
             while (!ct.IsCancellationRequested && _shellStream != null && IsConnected)
             {
                 int count = _shellStream.Read(buffer, 0, buffer.Length);
                 if (count <= 0) break;
-                var data = Encoding.UTF8.GetString(buffer, 0, count);
-                DataReceived?.Invoke(data);
+
+                // 扫描是否包含 ZMODEM 魔法序列 **\x18[ABC]
+                int zStart = FindZmodemMagic(buffer, count);
+                if (zStart >= 0)
+                {
+                    // 把魔法序列之前的数据发给终端
+                    if (zStart > 0)
+                        DataReceived?.Invoke(Encoding.UTF8.GetString(buffer, 0, zStart));
+
+                    // 将 [zStart..count) 作为 lookahead 传给 ZmodemTransfer
+                    int lookaheadLen = count - zStart;
+                    var lookahead    = new ReadOnlySpan<byte>(buffer, zStart, lookaheadLen);
+
+                    RunZmodemTransfer(lookahead, ct);
+                    continue; // 传输完成后继续正常读循环
+                }
+
+                DataReceived?.Invoke(Encoding.UTF8.GetString(buffer, 0, count));
             }
         }
         catch (Exception ex) when (!ct.IsCancellationRequested)
@@ -139,20 +183,76 @@ internal sealed class TerminalSessionService : IDisposable
         }
     }
 
+    /// <summary>在 buffer[0..count) 中查找 **\x18 后跟 B/A/C 的起始位置，找不到返回 -1。</summary>
+    private static int FindZmodemMagic(byte[] buffer, int count)
+    {
+        // 魔法序列：0x2A 0x2A 0x18 (0x42|0x41|0x43)
+        for (int i = 0; i < count - 3; i++)
+        {
+            if (buffer[i]   == 0x2A && buffer[i+1] == 0x2A &&
+                buffer[i+2] == 0x18 &&
+                (buffer[i+3] == 0x42 || buffer[i+3] == 0x41 || buffer[i+3] == 0x43))
+                return i;
+        }
+        return -1;
+    }
+
+    private void RunZmodemTransfer(ReadOnlySpan<byte> lookahead, CancellationToken ct)
+    {
+        if (_shellStream == null) return;
+
+        AppLogger.Info("zmodem transfer initiated");
+        DataReceived?.Invoke("\r\n[ZMODEM 传输中...]\r\n");
+
+        try
+        {
+            var xfer = new ZmodemTransfer(_shellStream, lookahead);
+            xfer.StatusChanged    = msg => ZmodemStatus?.Invoke(msg);
+            xfer.FileReceived     = (name, data) => ZmodemFileReceived?.Invoke(name, data);
+            xfer.RequestUploadFile = ZmodemRequestUpload;
+
+            xfer.Run(ct);
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            AppLogger.Error("zmodem transfer error", ex);
+            DataReceived?.Invoke($"\r\n[ZMODEM 错误：{ex.Message}]\r\n");
+        }
+        finally
+        {
+            DataReceived?.Invoke("\r\n[ZMODEM 传输结束]\r\n");
+            AppLogger.Info("zmodem transfer finished");
+        }
+    }
+
     // ── Telnet ────────────────────────────────────────────────────────────────
 
     // 自动登录凭据
     private string _telnetUsername = "";
     private string _telnetPassword = "";
+    private readonly TelnetProtocolHandler _telnetProtocol = new();
 
-    private async Task ConnectTelnetAsync(ServerInfo server, CancellationToken timeoutCt)
+    private async Task ConnectTelnetAsync(ServerInfo server, SocksProxyEntry? proxy, CancellationToken timeoutCt)
     {
         _telnetUsername = server.Username ?? "";
         _telnetPassword = server.Password ?? "";
+        _telnetProtocol.Reset();
 
-        _telnetClient = new TcpClient();
-        await _telnetClient.ConnectAsync(server.IP, server.Port, timeoutCt).ConfigureAwait(false);
-        _telnetStream = _telnetClient.GetStream();
+        if (proxy is { Host.Length: > 0 })
+        {
+            _telnetTunnel = await Socks5Helper.ConnectAsync(proxy, server.IP, server.Port, timeoutCt)
+                .ConfigureAwait(false);
+            _telnetClient = _telnetTunnel.Client;
+            _telnetStream = _telnetTunnel.Stream;
+        }
+        else
+        {
+            _telnetClient = new TcpClient();
+            await _telnetClient.ConnectAsync(server.IP, server.Port, timeoutCt).ConfigureAwait(false);
+            _telnetStream = _telnetClient.GetStream();
+        }
+        _telnetClient.NoDelay = true; // 禁用 Nagle，确保退格键等单字节交互数据立即发送
 
         IsConnected = true;
         Connected?.Invoke();
@@ -175,12 +275,16 @@ internal sealed class TerminalSessionService : IDisposable
                 int count = _telnetStream.Read(buffer, 0, buffer.Length);
                 if (count <= 0) break;
 
-                // 处理 Telnet IAC 协商，只将可打印数据送到终端
-                var (printable, response) = ProcessTelnetIac(buffer, count);
+                // 增量处理 Telnet IAC 协商，避免 TCP 分片导致协商状态丢失
+                var (printable, response) = _telnetProtocol.Process(buffer, count);
                 if (response.Count > 0)
                 {
                     var resp = response.ToArray();
                     _telnetStream.Write(resp, 0, resp.Length);
+                }
+                if (_telnetProtocol.ConsumeWindowSizeRequest())
+                {
+                    SendTelnetWindowSize();
                 }
 
                 if (printable.Count > 0)
@@ -201,6 +305,7 @@ internal sealed class TerminalSessionService : IDisposable
                         if (autoState == 0 &&
                             (ContainsIgnoreCase(recent, "login:") ||
                              ContainsIgnoreCase(recent, "username:") ||
+                             ContainsIgnoreCase(recent, "user:") ||
                              ContainsIgnoreCase(recent, "用户名")))
                         {
                             SendInput(_telnetUsername + "\r\n");
@@ -209,7 +314,8 @@ internal sealed class TerminalSessionService : IDisposable
                         }
                         else if (autoState == 1 &&
                                  (ContainsIgnoreCase(recent, "password:") ||
-                                  ContainsIgnoreCase(recent, "密码:")))
+                                  ContainsIgnoreCase(recent, "passwd:") ||
+                                  ContainsIgnoreCase(recent, "密码")))
                         {
                             SendInput(_telnetPassword + "\r\n");
                             autoState = 2;
@@ -235,71 +341,6 @@ internal sealed class TerminalSessionService : IDisposable
     private static bool ContainsIgnoreCase(string source, string value)
         => source.IndexOf(value, StringComparison.OrdinalIgnoreCase) >= 0;
 
-    /// <summary>
-    /// 解析 Telnet IAC 序列，返回可打印数据和需要回复的协商字节。
-    /// 对 WILL 回复 DONT，对 DO 回复 WONT，SUPPRESS-GO-AHEAD 例外（接受）。
-    /// </summary>
-    private static (List<byte> printable, List<byte> response) ProcessTelnetIac(byte[] buf, int count)
-    {
-        const byte IAC  = 0xFF;
-        const byte WILL = 0xFB;
-        const byte WONT = 0xFC;
-        const byte DO   = 0xFD;
-        const byte DONT = 0xFE;
-        const byte SB   = 0xFA;
-        const byte SE   = 0xF0;
-        const byte SGA  = 0x03; // Suppress Go Ahead
-
-        var printable = new List<byte>(count);
-        var response  = new List<byte>();
-        int i = 0;
-
-        while (i < count)
-        {
-            if (buf[i] != IAC)
-            {
-                printable.Add(buf[i++]);
-                continue;
-            }
-
-            // IAC sequence
-            if (i + 1 >= count) { i++; break; }
-
-            byte cmd = buf[i + 1];
-
-            if (cmd == SB)
-            {
-                // 跳过子协商直至 IAC SE
-                i += 2;
-                while (i < count && !(buf[i] == IAC && i + 1 < count && buf[i + 1] == SE))
-                    i++;
-                i += 2;
-            }
-            else if (cmd == WILL || cmd == DO)
-            {
-                if (i + 2 >= count) { i += 2; break; }
-                byte opt = buf[i + 2];
-                if (cmd == WILL)
-                    // 接受 SGA（Suppress Go Ahead），拒绝其他
-                    response.AddRange(opt == SGA ? [IAC, DO, opt] : [IAC, DONT, opt]);
-                else
-                    // DO 时告知我们 WONT，除 SGA
-                    response.AddRange(opt == SGA ? [IAC, WILL, opt] : [IAC, WONT, opt]);
-                i += 3;
-            }
-            else if (cmd == WONT || cmd == DONT)
-            {
-                i += 3;
-            }
-            else
-            {
-                i += 2;
-            }
-        }
-
-        return (printable, response);
-    }
-
     // ── 输入 & 调整大小 ───────────────────────────────────────────────────────
 
     public void SendInput(string data)
@@ -315,6 +356,10 @@ internal sealed class TerminalSessionService : IDisposable
             }
             else if (_telnetStream != null)
             {
+                // 将 \x7f (DEL/xterm 默认退格) 映射为 \x08 (BS/Ctrl+H)，
+                // 确保 Cisco/Huawei 等网络设备无论经过何种路径（直连或 SOCKS 跳转）
+                // 都能正确识别退格键（许多设备 VTY 线路只接受 \x08）。
+                data = data.Replace('\x7f', '\x08');
                 var bytes = Encoding.UTF8.GetBytes(data);
                 _telnetStream.Write(bytes, 0, bytes.Length);
                 _telnetStream.Flush();
@@ -328,9 +373,20 @@ internal sealed class TerminalSessionService : IDisposable
 
     public void Resize(int cols, int rows)
     {
-        // SSH.NET 2025.x 的 ShellStream 不直接暴露窗口大小更新 API，
-        // 终端大小调整通过重建 ShellStream 实现（成本较高），此处保留接口供将来扩展。
-        _ = cols; _ = rows;
+        _terminalCols = Math.Max(1, cols);
+        _terminalRows = Math.Max(1, rows);
+
+        try
+        {
+            _shellStream?.ChangeWindowSize((uint)_terminalCols, (uint)_terminalRows, 0, 0);
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Warn($"ssh resize ignored: {ex.Message}");
+        }
+
+        if (_telnetProtocol.CanSendWindowSize)
+            SendTelnetWindowSize();
     }
 
     // ── 释放 ─────────────────────────────────────────────────────────────────
@@ -347,6 +403,185 @@ internal sealed class TerminalSessionService : IDisposable
         try { _shellStream?.Dispose(); }  catch { }
         try { _sshClient?.Disconnect(); _sshClient?.Dispose(); } catch { }
         try { _telnetStream?.Dispose(); } catch { }
+        try { _telnetTunnel?.Dispose(); } catch { }
         try { _telnetClient?.Dispose(); } catch { }
+    }
+
+    private void SendTelnetWindowSize()
+    {
+        if (_telnetStream == null || !_telnetProtocol.CanSendWindowSize)
+            return;
+
+        try
+        {
+            var bytes = TelnetProtocolHandler.CreateWindowSizeCommand(_terminalCols, _terminalRows);
+            _telnetStream.Write(bytes, 0, bytes.Length);
+            _telnetStream.Flush();
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Warn($"telnet resize ignored: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// 增量式 Telnet 协议解析器，正确处理跨包 IAC/WILL/DO/SB/SE 与 IAC IAC。
+    /// </summary>
+    private sealed class TelnetProtocolHandler
+    {
+        private const byte IAC  = 0xFF;
+        private const byte WILL = 0xFB;
+        private const byte WONT = 0xFC;
+        private const byte DO   = 0xFD;
+        private const byte DONT = 0xFE;
+        private const byte SB   = 0xFA;
+        private const byte SE   = 0xF0;
+        private const byte SGA  = 0x03;
+        private const byte ECHO = 0x01;
+        private const byte NAWS = 0x1F;
+
+        private State _state = State.Data;
+        private byte _pendingCommand;
+        private bool _windowSizePending;
+
+        public bool CanSendWindowSize { get; private set; }
+
+        private enum State
+        {
+            Data,
+            SawIac,
+            NeedOption,
+            SubNegotiation,
+            SubNegotiationSawIac
+        }
+
+        public void Reset()
+        {
+            _state = State.Data;
+            _pendingCommand = 0;
+            _windowSizePending = false;
+            CanSendWindowSize = false;
+        }
+
+        public (List<byte> printable, List<byte> response) Process(byte[] buf, int count)
+        {
+            var printable = new List<byte>(count);
+            var response = new List<byte>();
+
+            for (int i = 0; i < count; i++)
+            {
+                byte b = buf[i];
+                switch (_state)
+                {
+                    case State.Data:
+                        if (b == IAC)
+                            _state = State.SawIac;
+                        else
+                            printable.Add(b);
+                        break;
+
+                    case State.SawIac:
+                        if (b == IAC)
+                        {
+                            printable.Add(IAC);
+                            _state = State.Data;
+                        }
+                        else if (b is WILL or WONT or DO or DONT)
+                        {
+                            _pendingCommand = b;
+                            _state = State.NeedOption;
+                        }
+                        else if (b == SB)
+                        {
+                            _state = State.SubNegotiation;
+                        }
+                        else
+                        {
+                            _state = State.Data;
+                        }
+                        break;
+
+                    case State.NeedOption:
+                        AppendNegotiationReply(response, _pendingCommand, b);
+                        _pendingCommand = 0;
+                        _state = State.Data;
+                        break;
+
+                    case State.SubNegotiation:
+                        if (b == IAC)
+                            _state = State.SubNegotiationSawIac;
+                        break;
+
+                    case State.SubNegotiationSawIac:
+                        _state = b == SE ? State.Data : State.SubNegotiation;
+                        break;
+                }
+            }
+
+            return (printable, response);
+        }
+
+        public bool ConsumeWindowSizeRequest()
+        {
+            if (!_windowSizePending)
+                return false;
+            _windowSizePending = false;
+            return true;
+        }
+
+        public static byte[] CreateWindowSizeCommand(int cols, int rows)
+        {
+            cols = Math.Clamp(cols, 1, 65535);
+            rows = Math.Clamp(rows, 1, 65535);
+
+            var bytes = new List<byte>(9) { IAC, SB, NAWS };
+            AppendEscapedByte(bytes, (byte)(cols >> 8));
+            AppendEscapedByte(bytes, (byte)cols);
+            AppendEscapedByte(bytes, (byte)(rows >> 8));
+            AppendEscapedByte(bytes, (byte)rows);
+            bytes.Add(IAC);
+            bytes.Add(SE);
+            return bytes.ToArray();
+        }
+
+        private void AppendNegotiationReply(List<byte> response, byte command, byte option)
+        {
+            switch (command)
+            {
+                case WILL:
+                    response.AddRange(option is ECHO or SGA ? [IAC, DO, option] : [IAC, DONT, option]);
+                    break;
+                case DO:
+                    if (option == SGA || option == NAWS)
+                    {
+                        response.AddRange([IAC, WILL, option]);
+                        if (option == NAWS)
+                        {
+                            CanSendWindowSize = true;
+                            _windowSizePending = true;
+                        }
+                    }
+                    else
+                    {
+                        response.AddRange([IAC, WONT, option]);
+                    }
+                    break;
+                case WONT:
+                case DONT:
+                    if (option == NAWS)
+                    {
+                        CanSendWindowSize = false;
+                        _windowSizePending = false;
+                    }
+                    break;
+            }
+        }
+
+        private static void AppendEscapedByte(List<byte> buffer, byte value)
+        {
+            buffer.Add(value);
+            if (value == IAC)
+                buffer.Add(IAC);
+        }
     }
 }

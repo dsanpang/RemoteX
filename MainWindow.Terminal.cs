@@ -6,7 +6,7 @@ using System.Windows;
 
 using Microsoft.Web.WebView2.Core;
 
-using MessageBox = System.Windows.MessageBox;
+
 
 namespace RemoteX
 {
@@ -57,12 +57,38 @@ namespace RemoteX
             catch (Exception ex)
             {
                 AppLogger.Error("webview2 init failed", ex);
-                MessageBox.Show(
+                AppMsg.Show(this,
                     "终端组件（WebView2）初始化失败，SSH/Telnet 功能不可用。\n" +
                     "请确认已安装 Microsoft Edge WebView2 Runtime。\n\n" + ex.Message,
-                    "初始化失败",
-                    MessageBoxButton.OK,
-                    MessageBoxImage.Warning);
+                    "初始化失败", AppMsgIcon.Warning);
+            }
+        }
+
+        // ── ZMODEM 文件保存 ───────────────────────────────────────────────────
+
+        private void ZmodemSaveFile(string filename, byte[] data)
+        {
+            var dlg = new Microsoft.Win32.SaveFileDialog
+            {
+                Title    = "保存接收到的文件",
+                FileName = filename
+            };
+            var ext = Path.GetExtension(filename);
+            if (!string.IsNullOrEmpty(ext))
+                dlg.Filter = $"*{ext}|*{ext}|所有文件|*.*";
+            else
+                dlg.Filter = "所有文件|*.*";
+
+            if (dlg.ShowDialog() != true) return;
+
+            try
+            {
+                File.WriteAllBytes(dlg.FileName, data);
+                ShowToast($"文件已保存：{Path.GetFileName(dlg.FileName)}（{data.Length / 1024.0:F1} KB）");
+            }
+            catch (Exception ex)
+            {
+                AppMsg.Show(this, $"保存文件失败：{ex.Message}", "ZMODEM", AppMsgIcon.Error);
             }
         }
 
@@ -78,17 +104,20 @@ namespace RemoteX
                 var type      = msg.GetProperty("type").GetString();
                 var sessionId = msg.GetProperty("sessionId").GetInt32();
 
+                // sessionId 在 xterm.js 侧是 (int)instanceId，查字典时转回 long
+                long tabKey = (long)sessionId;
+
                 if (type == "input")
                 {
                     var data = msg.GetProperty("data").GetString() ?? "";
-                    if (_tabSessions.TryGetValue(sessionId, out var t) && t is TerminalTabSession term)
+                    if (_tabSessions.TryGetValue(tabKey, out var t) && t is TerminalTabSession term)
                         term.Service.SendInput(data);
                 }
                 else if (type == "resize")
                 {
                     var cols = msg.GetProperty("cols").GetInt32();
                     var rows = msg.GetProperty("rows").GetInt32();
-                    if (_tabSessions.TryGetValue(sessionId, out var t) && t is TerminalTabSession term)
+                    if (_tabSessions.TryGetValue(tabKey, out var t) && t is TerminalTabSession term)
                         term.Service.Resize(cols, rows);
                 }
                 else if (type == "paste-request")
@@ -99,7 +128,7 @@ namespace RemoteX
                             ? System.Windows.Clipboard.GetText()
                             : "");
                     if (!string.IsNullOrEmpty(text) &&
-                        _tabSessions.TryGetValue(sessionId, out var t) && t is TerminalTabSession term)
+                        _tabSessions.TryGetValue(tabKey, out var t) && t is TerminalTabSession term)
                     {
                         term.Service.SendInput(text);
                     }
@@ -109,7 +138,7 @@ namespace RemoteX
                     // xterm.js 选中文字后通知 C# 写入系统剪贴板
                     var text = msg.GetProperty("data").GetString() ?? "";
                     if (!string.IsNullOrEmpty(text))
-                        Dispatcher.Invoke(() => System.Windows.Clipboard.SetText(text));
+                        Dispatcher.Invoke(() => TrySetClipboard(text));
                 }
             }
             catch (Exception ex)
@@ -136,89 +165,76 @@ namespace RemoteX
 
         // ── 建立 SSH / Telnet 连接 ────────────────────────────────────────────
 
-        internal async Task ConnectTerminalAsync(ServerInfo server)
+        internal async Task ConnectTerminalAsync(ServerInfo server, bool forceNew = false)
         {
-            // 若已有连接中的同一服务器，切换过去
-            if (_tabSessions.TryGetValue(server.Id, out var existing))
+            // 不强制新建时：若已有连接中的同一服务器，切换过去
+            if (!forceNew && TryGetSessionForServer(server.Id, out var existingId, out var existing) && existing != null)
             {
                 if (existing is TerminalTabSession { IsConnected: true })
                 {
-                    SwitchToSession(server.Id);
+                    SwitchToSession(existingId);
                     return;
                 }
-                RemoveTabSession(server.Id);
+                RemoveTabSession(existingId);
             }
 
             if (!_webViewReady)
             {
-                MessageBox.Show(
-                    "终端组件尚未就绪，请稍后再试",
-                    "提示", MessageBoxButton.OK, MessageBoxImage.Information);
+                AppMsg.Show(this, "终端组件尚未就绪，请稍后再试", "提示", AppMsgIcon.Info);
                 return;
             }
 
             // 同步超时配置
             TerminalSessionService.ConnectTimeoutSeconds = _appSettings.TerminalConnectTimeoutSec;
 
-            var service = new TerminalSessionService();
-            var tab     = new TerminalTabSession
+            var service    = new TerminalSessionService();
+            var instanceId = System.Threading.Interlocked.Increment(ref _nextSessionInstanceId);
+            var tab        = new TerminalTabSession
             {
-                Server  = server,
-                Address = BuildServerAddress(server),
-                Service = service
+                Server     = server,
+                Address    = BuildServerAddress(server),
+                InstanceId = instanceId,
+                Service    = service
             };
 
-            ServerInfo connectTarget = server;
-            if (TryGetSocksProxy(server, out var socks) && socks != null)
+            SocksProxyEntry? socks = null;
+            if (TryGetSocksProxy(server, out socks) && socks != null)
             {
-                var bridge = new SocksProxyBridge();
-                var localPort = bridge.Start(
-                    socks.Host, socks.Port,
-                    string.IsNullOrWhiteSpace(socks.Username) ? null : socks.Username,
-                    string.IsNullOrWhiteSpace(socks.Password) ? null : socks.Password,
-                    server.IP, server.Port);
-                tab.SocksBridge = bridge;
-                connectTarget = new ServerInfo
-                {
-                    Id = server.Id,
-                    Name = server.Name,
-                    IP = "127.0.0.1",
-                    Port = localPort,
-                    Username = server.Username,
-                    Password = server.Password,
-                    Protocol = server.Protocol,
-                    SshPrivateKeyPath = server.SshPrivateKeyPath,
-                    Description = server.Description,
-                    Group = server.Group
-                };
-                AppLogger.Info($"terminal via socks [{socks.Name}] 127.0.0.1:{localPort} -> {server.IP}:{server.Port}");
+                AppLogger.Info($"terminal via socks [{socks.Name}] {server.IP}:{server.Port}");
             }
 
-            _tabSessions[server.Id] = tab;
+            // 以 instanceId 为键存入，允许同一服务器有多个会话
+            _tabSessions[instanceId] = tab;
             AddStatusTabButton(tab);
-            SwitchToSession(server.Id);
+            RefreshTabLabelsForServer(server.Id);
+            SwitchToSession(instanceId);
 
-            StatusText.Text      = $"正在连接到 {tab.Address}...";
+            StatusText.Text      = $"正在连接到 {server.Name}...";
             DescriptionText.Text = server.Description ?? "";
-            Title = $"RemoteX — {server.Name}  ({tab.Address})";
+            Title = $"RemoteX — {server.Name}";
 
-            // 在 xterm.js 中创建对应终端实例
-            SendWebViewMessage(new { type = "create",   sessionId = server.Id });
-            SendWebViewMessage(new { type = "activate", sessionId = server.Id });
+            // 在 xterm.js 中创建对应终端实例（sessionId = instanceId）
+            SendWebViewMessage(new { type = "create",   sessionId = (int)instanceId });
+            SendWebViewMessage(new { type = "activate", sessionId = (int)instanceId });
             UpdateTabDot(tab, null);
 
             // 数据接收：SSH/Telnet → xterm.js
             service.DataReceived += data =>
                 Dispatcher.BeginInvoke(() =>
-                    SendWebViewMessage(new { type = "data", sessionId = server.Id, data }));
+                {
+                    if (!TryGetLiveTabSession(instanceId, out var current) || !ReferenceEquals(current, tab))
+                        return;
+                    SendWebViewMessage(new { type = "data", sessionId = (int)instanceId, data });
+                });
 
             // 连接成功回调
             service.Connected += () => Dispatcher.BeginInvoke(() =>
             {
-                if (!_tabSessions.ContainsKey(server.Id)) return;
+                if (!TryGetLiveTabSession(instanceId, out var current) || !ReferenceEquals(current, tab))
+                    return;
                 AppLogger.Info($"terminal connected: {tab.Address}");
                 UpdateTabDot(tab, true);
-                StatusText.Text = $"已连接  {tab.Address}";
+                StatusText.Text = $"已连接  {server.Name}";
                 _appSettings.AddRecentServer(server.Id);
                 RefreshRecentSection();
             });
@@ -226,24 +242,60 @@ namespace RemoteX
             // 断开回调
             service.Disconnected += () => Dispatcher.BeginInvoke(() =>
             {
-                if (!_tabSessions.ContainsKey(server.Id)) return;
+                if (!TryGetLiveTabSession(instanceId, out var current) || !ReferenceEquals(current, tab))
+                    return;
                 AppLogger.Info($"terminal disconnected: {tab.Address}");
                 UpdateTabDot(tab, false);
-                if (_activeServerId == server.Id)
-                    StatusText.Text = $"已断开  {tab.Address}";
+                if (_activeTabId == instanceId)
+                    StatusText.Text = $"已断开  {tab.Server.Name}";
             });
+
+            // ── ZMODEM 回调 ──────────────────────────────────────────────────
+            // 进度文字 → StatusText
+            service.ZmodemStatus = msg => Dispatcher.BeginInvoke(() =>
+            {
+                if (_activeTabId == instanceId) StatusText.Text = msg;
+            });
+
+            // 接收完成 → 弹 SaveFileDialog 保存
+            service.ZmodemFileReceived = (filename, data) =>
+                Dispatcher.BeginInvoke(() => ZmodemSaveFile(filename, data));
+
+            // 需要上传 → 弹 OpenFileDialog，在 UI 线程执行后返回结果
+            service.ZmodemRequestUpload = () =>
+            {
+                var tcs = new System.Threading.Tasks.TaskCompletionSource<(string, byte[])>();
+                Dispatcher.BeginInvoke(() =>
+                {
+                    try
+                    {
+                        var dlg = new Microsoft.Win32.OpenFileDialog { Title = "选择要上传的文件" };
+                        if (dlg.ShowDialog() == true)
+                        {
+                            var bytes = File.ReadAllBytes(dlg.FileName);
+                            tcs.SetResult((System.IO.Path.GetFileName(dlg.FileName), bytes));
+                        }
+                        else
+                        {
+                            tcs.SetCanceled();
+                        }
+                    }
+                    catch (Exception ex) { tcs.SetException(ex); }
+                });
+                return tcs.Task;
+            };
 
             try
             {
-                await service.ConnectAsync(connectTarget);
+                await service.ConnectAsync(server, socks);
             }
             catch (Exception ex)
             {
                 AppLogger.Error("terminal connect failed", ex);
-                MessageBox.Show(
-                    $"连接失败：\n{tab.Address}\n\n{ex.Message}",
-                    "连接错误", MessageBoxButton.OK, MessageBoxImage.Error);
-                RemoveTabSession(server.Id);
+                AppMsg.Show(this,
+                    $"连接失败：{tab.Server.Name}\n\n{ex.Message}",
+                    "连接错误", AppMsgIcon.Error);
+                RemoveTabSession(instanceId);
             }
         }
     }

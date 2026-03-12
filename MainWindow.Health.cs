@@ -13,7 +13,8 @@ namespace RemoteX
         // 批量健康检测
 
         private async Task CheckServersHealthAsync(
-            IReadOnlyList<ServerInfo> targets, bool reorderAfterCheck)
+            IReadOnlyList<ServerInfo> targets, bool reorderAfterCheck,
+            CancellationToken ct = default)
         {
             if (targets.Count == 0)
             {
@@ -21,15 +22,9 @@ namespace RemoteX
                 return;
             }
 
-            if (_isBulkHealthChecking)
-            {
-            StatusText.Text = "正在检测中，请稍候...";
-                return;
-            }
-
             if (_isHealthChecking)
             {
-            StatusText.Text = "正在检测当前服务器，请稍候...";
+                StatusText.Text = "正在检测当前服务器，请稍候...";
                 return;
             }
 
@@ -43,47 +38,63 @@ namespace RemoteX
                     s.HealthState   = ServerHealthState.Checking;
                     s.HealthMessage = "";
                 }
-                // INPC 已触发 UI 更新，无需手动 Refresh
 
-                StatusText.Text      = $"正在检测 {targets.Count} 台服务器端口 ...";
+                StatusText.Text      = $"正在检测 {targets.Count} 台服务器... （再次点击可取消）";
                 DescriptionText.Text = "";
 
                 using var limiter = new SemaphoreSlim(_appSettings.HealthCheckConcurrency);
                 var tasks = targets.Select(async server =>
                 {
-                    await limiter.WaitAsync();
+                    bool gotSlot = false;
                     try
                     {
-                        // 若服务器配置了代理，则通过代理检测，确保结果与实际访问路径一致
-                        var proxy = string.IsNullOrEmpty(server.SocksProxyName)
-                            ? null
-                            : _appSettings.SocksProxies?.Find(p => p.Name == server.SocksProxyName);
+                        await limiter.WaitAsync(ct);
+                        gotSlot = true;
+
+                        SocksProxyEntry? proxy = null;
+                        var hasProxyRef = HasSocksProxyReference(server);
+                        TryGetSocksProxy(server, out proxy);
+
+                        if (hasProxyRef && proxy == null)
+                            return (server, reachable: false, message: $"代理配置缺失 ({GetSocksProxyLabel(server)})", skipped: false);
 
                         var result = await _connectionHealthService.CheckAsync(
                             server.IP, server.Port, _appSettings.HealthCheckTimeoutMs, proxy);
-                        return (server, reachable: result.PortReachable, message: result.Message);
+                        return (server, reachable: result.PortReachable, message: result.Message, skipped: false);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        // 在等待信号量时被取消，标记为跳过
+                        return (server, reachable: false, message: "", skipped: true);
                     }
                     catch (Exception ex)
                     {
-                        return (server, reachable: false, message: $"超时错误 ({ex.Message})");
+                        return (server, reachable: false, message: $"超时错误 ({ex.Message})", skipped: false);
                     }
                     finally
                     {
-                        limiter.Release();
+                        if (gotSlot) limiter.Release();
                     }
                 }).ToList();
 
                 var probeResults = await Task.WhenAll(tasks);
+                int online = 0, offline = 0;
                 foreach (var item in probeResults)
                 {
+                    if (item.skipped)
+                    {
+                        // 被取消跳过的保留 Checking → 重置为 Unknown
+                        item.server.HealthState   = ServerHealthState.Unknown;
+                        item.server.HealthMessage = "";
+                        continue;
+                    }
                     item.server.HealthState   = item.reachable
                         ? ServerHealthState.Online
                         : ServerHealthState.Offline;
                     item.server.HealthMessage = item.message;
+                    if (item.reachable) online++; else offline++;
                 }
-
-                var online  = probeResults.Count(r => r.reachable);
-                var offline = probeResults.Length - online;
+                int checked_ = online + offline;
 
                 if (reorderAfterCheck)
                     ApplyHealthSort();
@@ -93,12 +104,25 @@ namespace RemoteX
                 RestoreSelectionByServerId(selectedId);
                 UpdateServerCount();
 
-                StatusText.Text = $"检测完成：在线 {online} / 总计 {probeResults.Length}";
+                StatusText.Text = $"检测完成：在线 {online} / 已检 {checked_}";
                 DescriptionText.Text = offline == 0
-                    ? "所有服务器端口可达"
-                : $"检测完成：{offline} 台离线，共检测 {probeResults.Length} 台";
+                    ? "所有已检测服务器端口可达"
+                    : $"检测完成：{offline} 台离线，共检测 {checked_} 台";
                 AppLogger.Info(
-                    $"bulk health check: total={probeResults.Length}, online={online}, offline={offline}");
+                    $"bulk health check: total={probeResults.Length}, checked={checked_}, online={online}, offline={offline}");
+            }
+            catch (OperationCanceledException)
+            {
+                // 理论上不应到达（各 task 已内部捕获 OCE），作为保底处理
+                foreach (var s in targets.Where(s => s.HealthState == ServerHealthState.Checking))
+                {
+                    s.HealthState   = ServerHealthState.Unknown;
+                    s.HealthMessage = "";
+                }
+                _serverView?.Refresh();
+                StatusText.Text      = "检测已取消";
+                DescriptionText.Text = "";
+                AppLogger.Info("bulk health check cancelled by user");
             }
             finally
             {
@@ -172,9 +196,12 @@ namespace RemoteX
                 Protocol = source.Protocol,
                 SshPrivateKeyPath = source.SshPrivateKeyPath,
                 Port = source.Port,
+                SocksProxyId = source.SocksProxyId,
                 SocksProxyName = source.SocksProxyName
             };
-            var dlg = new ServerEditWindow(clone, isNew: true, _appSettings.SocksProxies?.Select(p => p.Name).ToList()) { Owner = this };
+            var dlg = new ServerEditWindow(clone, isNew: true,
+                _appSettings.SocksProxies,
+                ExistingGroups()) { Owner = this };
             if (dlg.ShowDialog() != true) return;
             var maxOrder = await _serverRepository.GetMaxSortOrderAsync();
             clone.SortOrder = maxOrder + 1;
@@ -193,16 +220,45 @@ namespace RemoteX
         private void MenuCopyIp_Click(object sender, RoutedEventArgs e)
         {
             if (ServerList.SelectedItem is ServerInfo server)
-                System.Windows.Clipboard.SetText(server.IP);
+                TrySetClipboard(server.IP);
         }
 
         private void MenuCopyAddress_Click(object sender, RoutedEventArgs e)
         {
             if (ServerList.SelectedItem is ServerInfo server)
-                System.Windows.Clipboard.SetText(server.AddressDisplay);
+                TrySetClipboard(server.AddressDisplay);
+        }
+
+        /// <summary>
+        /// 在独立 STA 线程上写剪贴板，不阻塞 UI。
+        /// WPF 内部会自动重试最多 1 秒以等待剪贴板释放。
+        /// </summary>
+        private static void TrySetClipboard(string text)
+        {
+            var t = new System.Threading.Thread(() =>
+            {
+                try { System.Windows.Clipboard.SetText(text); }
+                catch { }
+            });
+            t.SetApartmentState(System.Threading.ApartmentState.STA);
+            t.IsBackground = true;
+            t.Start();
         }
 
         private async void CheckAllButton_Click(object sender, RoutedEventArgs e)
-            => await CheckServersHealthAsync(_servers, reorderAfterCheck: true);
+        {
+            // 再次点击时取消正在进行的检测
+            if (_isBulkHealthChecking)
+            {
+                _healthCheckCts?.Cancel();
+                return;
+            }
+
+            _healthCheckCts?.Dispose();
+            _healthCheckCts = new CancellationTokenSource();
+            await CheckServersHealthAsync(_servers, reorderAfterCheck: true, _healthCheckCts.Token);
+            _healthCheckCts.Dispose();
+            _healthCheckCts = null;
+        }
     }
 }

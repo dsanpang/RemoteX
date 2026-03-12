@@ -176,6 +176,95 @@
             </Setter>
         </Style>
 
+        <!-- 可编辑分组下拉框：允许输入新分组名，也可从现有分组中选择 -->
+        <Style x:Key="FIC" TargetType="ComboBox">
+            <Setter Property="Background"               Value="#313244"/>
+            <Setter Property="Foreground"               Value="#CDD6F4"/>
+            <Setter Property="BorderBrush"              Value="#45475A"/>
+            <Setter Property="BorderThickness"          Value="1"/>
+            <Setter Property="Height"                   Value="34"/>
+            <Setter Property="FontSize"                 Value="13"/>
+            <Setter Property="IsEditable"               Value="True"/>
+            <Setter Property="IsTextSearchEnabled"      Value="True"/>
+            <Setter Property="SnapsToDevicePixels"      Value="True"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ComboBox">
+                        <Grid>
+                            <Border x:Name="Bd"
+                                    Background="{TemplateBinding Background}"
+                                    BorderBrush="{TemplateBinding BorderBrush}"
+                                    BorderThickness="{TemplateBinding BorderThickness}"
+                                    CornerRadius="3">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="28"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBox x:Name="PART_EditableTextBox"
+                                             Grid.Column="0"
+                                             Margin="10,0,0,0"
+                                             VerticalAlignment="Center"
+                                             Background="Transparent"
+                                             BorderThickness="0"
+                                             Foreground="#CDD6F4"
+                                             CaretBrush="#89B4FA"
+                                             SelectionBrush="#89B4FA"
+                                             Focusable="True"
+                                             IsReadOnly="{TemplateBinding IsReadOnly}"/>
+                                    <Border Grid.Column="1" Background="Transparent">
+                                        <TextBlock Text="&#x2304;" FontSize="14"
+                                                   Foreground="#6C7086"
+                                                   HorizontalAlignment="Center"
+                                                   VerticalAlignment="Center"
+                                                   Margin="0,-2,0,0"/>
+                                    </Border>
+                                    <ToggleButton Grid.ColumnSpan="2"
+                                                  HorizontalAlignment="Right"
+                                                  Width="28" Focusable="False"
+                                                  Background="Transparent" BorderThickness="0"
+                                                  Cursor="Hand"
+                                                  IsChecked="{Binding IsDropDownOpen, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}"/>
+                                </Grid>
+                            </Border>
+                            <Popup x:Name="PART_Popup"
+                                   AllowsTransparency="True"
+                                   IsOpen="{TemplateBinding IsDropDownOpen}"
+                                   Placement="Bottom"
+                                   PlacementTarget="{Binding ElementName=Bd}"
+                                   PopupAnimation="Fade">
+                                <Border MinWidth="{Binding ActualWidth, ElementName=Bd}"
+                                        MaxHeight="{TemplateBinding MaxDropDownHeight}"
+                                        Background="#252535"
+                                        BorderBrush="#45475A"
+                                        BorderThickness="1"
+                                        CornerRadius="5"
+                                        Padding="4,4">
+                                    <Border.Effect>
+                                        <DropShadowEffect BlurRadius="12" ShadowDepth="4"
+                                                          Opacity="0.45" Color="#000000"/>
+                                    </Border.Effect>
+                                    <ScrollViewer SnapsToDevicePixels="True"
+                                                  HorizontalScrollBarVisibility="Disabled"
+                                                  VerticalScrollBarVisibility="Auto">
+                                        <ItemsPresenter/>
+                                    </ScrollViewer>
+                                </Border>
+                            </Popup>
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsKeyboardFocusWithin" Value="True">
+                                <Setter TargetName="Bd" Property="BorderBrush" Value="#89B4FA"/>
+                            </Trigger>
+                            <Trigger Property="IsDropDownOpen" Value="True">
+                                <Setter TargetName="Bd" Property="BorderBrush" Value="#89B4FA"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
         <!-- 下拉选项样式 -->
         <Style TargetType="ComboBoxItem">
             <Setter Property="Foreground"      Value="#CDD6F4"/>
@@ -275,10 +364,9 @@
                 <ColumnDefinition Width="*"/>
             </Grid.ColumnDefinitions>
             <TextBlock Grid.Column="0" Text="分组" Style="{StaticResource FL}"/>
-            <TextBox   x:Name="GroupBox" Grid.Column="1"
-                       Style="{StaticResource FI}"
-                       ToolTip="可选，用于对服务器分组（如：生产、测试）"
-                       KeyDown="InputBox_KeyDown"/>
+            <ComboBox  x:Name="GroupBox" Grid.Column="1"
+                       Style="{StaticResource FIC}"
+                       ToolTip="可选，选择现有分组或直接输入新分组名"/>
         </Grid>
 
         <!-- 通过 SOCKS 连接（多机房选择代理） -->

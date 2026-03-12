@@ -23,7 +23,7 @@ internal static class CredentialProtector
         catch
         {
             AppLogger.Warn("password protect failed, returned empty value");
-            // 严格模式：禁止回落为明文入库
+            // 严格模弝：禝止回蝽为明文入库
             return string.Empty;
         }
     }
@@ -47,11 +47,11 @@ internal static class CredentialProtector
         catch
         {
             AppLogger.Warn("password unprotect failed, returned empty value");
-            // 解密失败返回空串，避免把密文当密码继续使�?
+            // 解密失败返回空串，靿兝把密文当密砝继续使�?
             return string.Empty;
         }
     }
 
-    private static bool IsProtected(string value)
+    public static bool IsProtected(string value)
         => value.StartsWith(Prefix, StringComparison.Ordinal);
 }

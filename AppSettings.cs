@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Text.Json;
 
 namespace RemoteX;
@@ -37,6 +38,9 @@ public sealed class AppSettings
     /// <summary>SOCKS5 代理列表，供 RDP/SSH 连接选用。</summary>
     public List<SocksProxyEntry> SocksProxies { get; set; } = new();
 
+    /// <summary>云同步配置。SecretKey/SyncPassword 内存为明文，磁盘 DPAPI 加密。</summary>
+    public CloudSyncConfig CloudSync { get; set; } = new();
+
     public static AppSettings Load()
     {
         try
@@ -44,11 +48,24 @@ public sealed class AppSettings
             if (!File.Exists(FilePath)) return new AppSettings();
             var json = File.ReadAllText(FilePath);
             var settings = JsonSerializer.Deserialize<AppSettings>(json, JsonOpts) ?? new AppSettings();
+            settings.SocksProxies ??= new List<SocksProxyEntry>();
+            var needsSave = NormalizeSocksProxies(settings.SocksProxies);
             if (settings.SocksProxies.Count == 0 && TryGetLegacySocksFromJson(json, out var legacy))
             {
+                legacy.EnsureId();
                 settings.SocksProxies.Add(legacy);
-                settings.Save();
+                needsSave = true;
             }
+            // 解密云同步密钥
+            settings.CloudSync ??= new CloudSyncConfig();
+            var cs = settings.CloudSync;
+            if (!string.IsNullOrEmpty(cs.SecretKey) && CredentialProtector.IsProtected(cs.SecretKey))
+                cs.SecretKey = CredentialProtector.Unprotect(cs.SecretKey);
+            if (!string.IsNullOrEmpty(cs.SyncPassword) && CredentialProtector.IsProtected(cs.SyncPassword))
+                cs.SyncPassword = CredentialProtector.Unprotect(cs.SyncPassword);
+
+            if (needsSave)
+                settings.Save();
             return settings;
         }
         catch (Exception ex)
@@ -84,7 +101,8 @@ public sealed class AppSettings
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(FilePath)!);
-            File.WriteAllText(FilePath, JsonSerializer.Serialize(this, JsonOpts));
+            var persisted = CreatePersistedSnapshot();
+            File.WriteAllText(FilePath, JsonSerializer.Serialize(persisted, JsonOpts));
         }
         catch (Exception ex)
         {
@@ -106,5 +124,82 @@ public sealed class AppSettings
     public void RemoveRecentServer(int serverId)
     {
         if (RecentServerIds.Remove(serverId)) Save();
+    }
+
+    private static bool NormalizeSocksProxies(List<SocksProxyEntry> proxies)
+    {
+        bool needsSave = false;
+        foreach (var proxy in proxies)
+        {
+            if (string.IsNullOrWhiteSpace(proxy.Id))
+            {
+                proxy.EnsureId();
+                needsSave = true;
+            }
+
+            if (!string.IsNullOrEmpty(proxy.Password))
+            {
+                if (CredentialProtector.IsProtected(proxy.Password))
+                {
+                    proxy.Password = CredentialProtector.Unprotect(proxy.Password);
+                }
+                else
+                {
+                    // 兼容旧版本明文配置，加载后立即迁移为 DPAPI 加密存储。
+                    needsSave = true;
+                }
+            }
+        }
+        return needsSave;
+    }
+
+    private AppSettings CreatePersistedSnapshot()
+    {
+        return new AppSettings
+        {
+            DefaultPort = DefaultPort,
+            HealthCheckTimeoutMs = HealthCheckTimeoutMs,
+            HealthCheckConcurrency = HealthCheckConcurrency,
+            ConnectTimeoutMs = ConnectTimeoutMs,
+            RdpAuthLevel = RdpAuthLevel,
+            TerminalConnectTimeoutSec = TerminalConnectTimeoutSec,
+            CloseAction = CloseAction,
+            MaxRecentCount = MaxRecentCount,
+            RecentServerIds = new List<int>(RecentServerIds),
+            LastExportDirectory = LastExportDirectory,
+            LastImportDirectory = LastImportDirectory,
+            SocksProxies = SocksProxies.Select(p =>
+            {
+                p.EnsureId();
+                return new SocksProxyEntry
+                {
+                    Id = p.Id,
+                    Name = p.Name,
+                    Host = p.Host,
+                    Port = p.Port,
+                    Username = p.Username,
+                    Password = CredentialProtector.Protect(p.Password),
+                    UseTls = p.UseTls,
+                    TlsServerName = p.TlsServerName,
+                    TlsPinnedSha256 = p.TlsPinnedSha256
+                };
+            }).ToList(),
+            CloudSync = new CloudSyncConfig
+            {
+                Enabled        = CloudSync.Enabled,
+                Endpoint       = CloudSync.Endpoint,
+                Region         = CloudSync.Region,
+                Bucket         = CloudSync.Bucket,
+                AccessKey      = CloudSync.AccessKey,
+                SecretKey      = CredentialProtector.Protect(CloudSync.SecretKey),
+                ObjectKey      = string.IsNullOrWhiteSpace(CloudSync.ObjectKey)
+                                     ? "remotex/sync.json"
+                                     : CloudSync.ObjectKey,
+                UsePathStyle   = CloudSync.UsePathStyle,
+                IgnoreSslErrors = CloudSync.IgnoreSslErrors,
+                SyncPassword   = CredentialProtector.Protect(CloudSync.SyncPassword),
+                LastSyncUtc    = CloudSync.LastSyncUtc
+            }
+        };
     }
 }

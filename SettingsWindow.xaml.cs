@@ -1,12 +1,12 @@
 using System.Windows;
 
-using MessageBox = System.Windows.MessageBox;
 
 namespace RemoteX;
 
 public partial class SettingsWindow : Window
 {
     private readonly AppSettings _settings;
+
     public SettingsWindow(AppSettings settings)
     {
         InitializeComponent();
@@ -15,12 +15,31 @@ public partial class SettingsWindow : Window
 
     private void Window_Loaded(object sender, RoutedEventArgs e)
     {
-        HealthTimeoutBox.Text     = _settings.HealthCheckTimeoutMs.ToString();
-        HealthConcurrencyBox.Text = _settings.HealthCheckConcurrency.ToString();
-        ConnectTimeoutBox.Text    = _settings.ConnectTimeoutMs.ToString();
-        DefaultPortBox.Text       = _settings.DefaultPort.ToString();
-        RdpAuthLevelBox.Text      = _settings.RdpAuthLevel.ToString();
-        MaxRecentBox.Text         = _settings.MaxRecentCount.ToString();
+        HealthTimeoutBox.Text          = _settings.HealthCheckTimeoutMs.ToString();
+        HealthConcurrencyBox.Text      = _settings.HealthCheckConcurrency.ToString();
+        ConnectTimeoutBox.Text         = _settings.ConnectTimeoutMs.ToString();
+        DefaultPortBox.Text            = _settings.DefaultPort.ToString();
+        RdpAuthLevelBox.Text           = _settings.RdpAuthLevel.ToString();
+        TerminalConnectTimeoutBox.Text = _settings.TerminalConnectTimeoutSec.ToString();
+        MaxRecentBox.Text              = _settings.MaxRecentCount.ToString();
+
+        // ── 云同步 ──────────────────────────────────────────────────────────
+        var cs = _settings.CloudSync;
+        SyncEnabledCheck.IsChecked  = cs.Enabled;
+        SyncEndpointBox.Text        = cs.Endpoint;
+        SyncRegionBox.Text          = cs.Region;
+        SyncBucketBox.Text          = cs.Bucket;
+        SyncAccessKeyBox.Text       = cs.AccessKey;
+        SyncSecretKeyBox.Password   = cs.SecretKey;
+        SyncObjectKeyBox.Text       = string.IsNullOrWhiteSpace(cs.ObjectKey)
+                                          ? "remotex/sync.json"
+                                          : cs.ObjectKey;
+        SyncPathStyleCheck.IsChecked  = cs.UsePathStyle;
+        SyncIgnoreSslCheck.IsChecked  = cs.IgnoreSslErrors;
+        SyncPasswordBox.Password      = cs.SyncPassword;
+
+        UpdateSyncLastTimeText(cs.LastSyncUtc);
+        SyncConfigPanel.IsEnabled = cs.Enabled;
 
         HealthTimeoutBox.Focus();
     }
@@ -69,12 +88,37 @@ public partial class SettingsWindow : Window
             return;
         }
 
-        _settings.HealthCheckTimeoutMs   = healthTimeout;
-        _settings.HealthCheckConcurrency = concurrency;
-        _settings.ConnectTimeoutMs       = connectTimeout;
-        _settings.DefaultPort            = port;
-        _settings.RdpAuthLevel          = rdpAuth;
-        _settings.MaxRecentCount         = maxRecent;
+        if (!int.TryParse(TerminalConnectTimeoutBox.Text, out int terminalTimeout) ||
+            terminalTimeout < 3 || terminalTimeout > 120)
+        {
+            ShowError("SSH/Telnet 超时必须在 3-120 秒之间");
+            TerminalConnectTimeoutBox.Focus();
+            return;
+        }
+
+        _settings.HealthCheckTimeoutMs      = healthTimeout;
+        _settings.HealthCheckConcurrency    = concurrency;
+        _settings.ConnectTimeoutMs          = connectTimeout;
+        _settings.DefaultPort               = port;
+        _settings.RdpAuthLevel              = rdpAuth;
+        _settings.TerminalConnectTimeoutSec = terminalTimeout;
+        _settings.MaxRecentCount            = maxRecent;
+
+        // ── 保存云同步配置 ────────────────────────────────────────────────
+        var cs = _settings.CloudSync;
+        cs.Enabled      = SyncEnabledCheck.IsChecked == true;
+        cs.Endpoint     = SyncEndpointBox.Text.Trim();
+        cs.Region       = SyncRegionBox.Text.Trim();
+        cs.Bucket       = SyncBucketBox.Text.Trim();
+        cs.AccessKey    = SyncAccessKeyBox.Text.Trim();
+        cs.SecretKey    = SyncSecretKeyBox.Password;
+        cs.ObjectKey    = string.IsNullOrWhiteSpace(SyncObjectKeyBox.Text)
+                              ? "remotex/sync.json"
+                              : SyncObjectKeyBox.Text.Trim();
+        cs.UsePathStyle    = SyncPathStyleCheck.IsChecked == true;
+        cs.IgnoreSslErrors = SyncIgnoreSslCheck.IsChecked == true;
+        cs.SyncPassword    = SyncPasswordBox.Password;
+
         _settings.Save();
 
         DialogResult = true;
@@ -92,7 +136,82 @@ public partial class SettingsWindow : Window
         if (sender is System.Windows.Controls.TextBox tb) tb.SelectAll();
     }
 
+    // ── 云同步 ──────────────────────────────────────────────────────────────
+
+    private void SyncEnabledCheck_Changed(object sender, RoutedEventArgs e)
+    {
+        if (SyncConfigPanel != null)
+            SyncConfigPanel.IsEnabled = SyncEnabledCheck.IsChecked == true;
+    }
+
+    private async void SyncTestBtn_Click(object sender, RoutedEventArgs e)
+    {
+        SyncStatusText.Text = "正在测试…";
+        SyncTestBtn.IsEnabled = false;
+        try
+        {
+            var cfg = BuildCurrentSyncConfig();
+            var svc = new CloudSyncService(cfg);
+            var (ok, msg) = await svc.TestConnectionAsync();
+            SyncStatusText.Foreground = ok
+                ? new System.Windows.Media.SolidColorBrush(
+                    System.Windows.Media.Color.FromRgb(0xA6, 0xE3, 0xA1))
+                : new System.Windows.Media.SolidColorBrush(
+                    System.Windows.Media.Color.FromRgb(0xF3, 0x8B, 0xA8));
+            SyncStatusText.Text = msg;
+        }
+        catch (Exception ex)
+        {
+            SyncStatusText.Foreground = new System.Windows.Media.SolidColorBrush(
+                System.Windows.Media.Color.FromRgb(0xF3, 0x8B, 0xA8));
+            SyncStatusText.Text = ex.Message;
+        }
+        finally
+        {
+            SyncTestBtn.IsEnabled = true;
+        }
+    }
+
+    /// <summary>从当前表单读取云同步配置（不保存到 _settings）。</summary>
+    private CloudSyncConfig BuildCurrentSyncConfig() => new()
+    {
+        Enabled      = SyncEnabledCheck.IsChecked == true,
+        Endpoint     = SyncEndpointBox.Text.Trim(),
+        Region       = SyncRegionBox.Text.Trim(),
+        Bucket       = SyncBucketBox.Text.Trim(),
+        AccessKey    = SyncAccessKeyBox.Text.Trim(),
+        SecretKey    = SyncSecretKeyBox.Password,
+        ObjectKey    = string.IsNullOrWhiteSpace(SyncObjectKeyBox.Text)
+                           ? "remotex/sync.json"
+                           : SyncObjectKeyBox.Text.Trim(),
+        UsePathStyle    = SyncPathStyleCheck.IsChecked == true,
+        IgnoreSslErrors = SyncIgnoreSslCheck.IsChecked == true,
+        SyncPassword    = SyncPasswordBox.Password,
+        LastSyncUtc  = _settings.CloudSync.LastSyncUtc
+    };
+
+    private void UpdateSyncLastTimeText(string utcStr)
+    {
+        if (string.IsNullOrWhiteSpace(utcStr))
+        {
+            SyncLastTimeText.Text = "";
+            return;
+        }
+        if (System.DateTime.TryParse(utcStr,
+                System.Globalization.CultureInfo.InvariantCulture,
+                System.Globalization.DateTimeStyles.AssumeUniversal |
+                System.Globalization.DateTimeStyles.AdjustToUniversal,
+                out var dt))
+        {
+            var local = dt.ToLocalTime();
+            SyncLastTimeText.Text = $"上次同步：{local:yyyy-MM-dd HH:mm:ss}";
+        }
+        else
+        {
+            SyncLastTimeText.Text = $"上次同步：{utcStr}";
+        }
+    }
+
     private void ShowError(string message)
-        => MessageBox.Show(message, "输入错误",
-               MessageBoxButton.OK, MessageBoxImage.Warning);
+        => AppMsg.Show(this, message, "输入错误", AppMsgIcon.Warning);
 }

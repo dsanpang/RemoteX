@@ -162,6 +162,36 @@
             </Setter>
         </Style>
 
+        <!-- ── Activity bar button (40×40, icon-only) ── -->
+        <Style x:Key="ActivityBarBtnStyle" TargetType="Button">
+            <Setter Property="Width" Value="40"/>
+            <Setter Property="Height" Value="40"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Foreground" Value="#6C7086"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Padding" Value="0"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Bd" Background="{TemplateBinding Background}"
+                                Width="40" Height="40">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#313244"/>
+                                <Setter Property="Foreground" Value="#CDD6F4"/>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#45475A"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
         <!-- ── ListBox: transparent, no border ── -->
         <Style x:Key="ServerListStyle" TargetType="ListBox">
             <Setter Property="Background" Value="Transparent"/>
@@ -242,316 +272,327 @@
 
     <Grid>
         <Grid.ColumnDefinitions>
-            <ColumnDefinition x:Name="SidebarColumn" Width="268" MinWidth="0" MaxWidth="500"/>
+            <ColumnDefinition x:Name="ActivityBarColumn"  Width="40"  MinWidth="0"/>
+            <ColumnDefinition x:Name="FeaturePanelColumn" Width="268" MinWidth="0" MaxWidth="500"/>
             <ColumnDefinition Width="*"/>
         </Grid.ColumnDefinitions>
 
-        <!-- ════════════════ SIDEBAR ════════════════ -->
+        <!-- ════════════════ ACTIVITY BAR (col 0) ════════════════ -->
         <Border Grid.Column="0"
+                Background="{StaticResource Crust}"
+                BorderBrush="{StaticResource Surface0}"
+                BorderThickness="0,0,1,0">
+            <DockPanel>
+                <!-- Top icons -->
+                <StackPanel DockPanel.Dock="Top">
+
+                    <Grid Height="40">
+                        <Button x:Name="ActivityBtn_Servers"
+                                Style="{StaticResource ActivityBarBtnStyle}"
+                                ToolTip="服务器列表"
+                                Click="ActivityBtn_Servers_Click">
+                            <TextBlock Text="☰" FontSize="16" VerticalAlignment="Center" HorizontalAlignment="Center"/>
+                        </Button>
+                        <Border x:Name="ActivityAccent_Servers"
+                                Width="3" HorizontalAlignment="Left"
+                                Background="{StaticResource Blue}"
+                                IsHitTestVisible="False"
+                                Visibility="Visible"/>
+                    </Grid>
+
+                    <Grid Height="40">
+                        <Button x:Name="ActivityBtn_Recent"
+                                Style="{StaticResource ActivityBarBtnStyle}"
+                                ToolTip="最近连接"
+                                Click="ActivityBtn_Recent_Click">
+                            <TextBlock Text="★" FontSize="15" VerticalAlignment="Center" HorizontalAlignment="Center"/>
+                        </Button>
+                        <Border x:Name="ActivityAccent_Recent"
+                                Width="3" HorizontalAlignment="Left"
+                                Background="{StaticResource Blue}"
+                                IsHitTestVisible="False"
+                                Visibility="Collapsed"/>
+                    </Grid>
+
+                    <Grid Height="40">
+                        <Button x:Name="ActivityBtn_Forwards"
+                                Style="{StaticResource ActivityBarBtnStyle}"
+                                ToolTip="端口转发"
+                                Click="ActivityBtn_Forwards_Click">
+                            <TextBlock Text="⇄" FontSize="15" VerticalAlignment="Center" HorizontalAlignment="Center"/>
+                        </Button>
+                        <Border x:Name="ActivityAccent_Forwards"
+                                Width="3" HorizontalAlignment="Left"
+                                Background="{StaticResource Blue}"
+                                IsHitTestVisible="False"
+                                Visibility="Collapsed"/>
+                    </Grid>
+
+                    <Grid Height="40">
+                        <Button x:Name="ActivityBtn_Commands"
+                                Style="{StaticResource ActivityBarBtnStyle}"
+                                ToolTip="快捷命令"
+                                Click="ActivityBtn_Commands_Click">
+                            <TextBlock Text="▶" FontSize="13" VerticalAlignment="Center" HorizontalAlignment="Center"/>
+                        </Button>
+                        <Border x:Name="ActivityAccent_Commands"
+                                Width="3" HorizontalAlignment="Left"
+                                Background="{StaticResource Blue}"
+                                IsHitTestVisible="False"
+                                Visibility="Collapsed"/>
+                    </Grid>
+
+                    <Grid Height="40">
+                        <Button x:Name="ActivityBtn_Sftp"
+                                Style="{StaticResource ActivityBarBtnStyle}"
+                                ToolTip="SFTP"
+                                Click="ActivityBtn_Sftp_Click">
+                            <TextBlock Text="⌁" FontSize="17" VerticalAlignment="Center" HorizontalAlignment="Center"/>
+                        </Button>
+                        <Border x:Name="ActivityAccent_Sftp"
+                                Width="3" HorizontalAlignment="Left"
+                                Background="{StaticResource Blue}"
+                                IsHitTestVisible="False"
+                                Visibility="Collapsed"/>
+                    </Grid>
+
+                </StackPanel>
+
+                <!-- Bottom icons -->
+                <StackPanel DockPanel.Dock="Bottom">
+                    <Button x:Name="ActivityBtn_Sync"
+                            Style="{StaticResource ActivityBarBtnStyle}"
+                            ToolTip="同步"
+                            Click="ActivityBtn_Sync_Click">
+                        <TextBlock Text="⇅" FontSize="17" VerticalAlignment="Center" HorizontalAlignment="Center"/>
+                        <Button.ContextMenu>
+                            <ContextMenu x:Name="SyncContextMenu"
+                                         Background="#313244"
+                                         BorderBrush="#45475A"
+                                         Foreground="#CDD6F4">
+                                <MenuItem x:Name="SyncMenu_Import"
+                                          Header="⬇  导入备份文件"
+                                          Foreground="#CDD6F4"
+                                          Click="ImportButton_Click"/>
+                                <MenuItem x:Name="SyncMenu_Export"
+                                          Header="⬆  导出备份文件"
+                                          Foreground="#CDD6F4"
+                                          Click="ExportButton_Click"/>
+                                <Separator Background="#45475A"/>
+                                <MenuItem x:Name="SyncMenu_CloudUpload"
+                                          Header="☁⬆  上传到云端"
+                                          Foreground="#89B4FA"
+                                          Click="CloudUploadButton_Click"/>
+                                <MenuItem x:Name="SyncMenu_CloudDownload"
+                                          Header="☁⬇  从云端下载"
+                                          Foreground="#89B4FA"
+                                          Click="CloudDownloadButton_Click"/>
+                            </ContextMenu>
+                        </Button.ContextMenu>
+                    </Button>
+                    <Button x:Name="ActivityBtn_Settings"
+                            Style="{StaticResource ActivityBarBtnStyle}"
+                            ToolTip="设置 (Ctrl+,)"
+                            Click="ActivityBtn_Settings_Click">
+                        <TextBlock Text="⚙" FontSize="15" VerticalAlignment="Center" HorizontalAlignment="Center"/>
+                    </Button>
+                </StackPanel>
+            </DockPanel>
+        </Border>
+
+        <!-- ════════════════ FEATURE PANEL (col 1) ════════════════ -->
+        <Border x:Name="FeaturePanelBorder"
+                Grid.Column="1"
                 Background="{StaticResource Mantle}"
                 BorderBrush="{StaticResource Surface0}"
                 BorderThickness="0,0,1,0">
             <Grid>
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="Auto"/>
-                    <!-- 0: header -->
-                    <RowDefinition Height="Auto"/>
-                    <!-- 1: search + buttons -->
-                    <RowDefinition Height="Auto"/>
-                    <!-- 2: 最近连接 -->
-                    <RowDefinition Height="1"/>
-                    <!-- 3: divider -->
-                    <RowDefinition Height="*"/>
-                    <!-- 4: server list -->
-                    <RowDefinition Height="Auto"/>
-                    <!-- 5: footer -->
-                </Grid.RowDefinitions>
 
-                <!-- APP HEADER -->
-                <Border Grid.Row="0" Background="{StaticResource Crust}" Padding="14,14">
-                    <DockPanel>
-                        <Border DockPanel.Dock="Left"
-                                Width="38" Height="38"
-                                CornerRadius="10"
-                                Margin="0,0,11,0">
-                            <Border.Background>
-                                <ImageBrush ImageSource="/background.png" TileMode="None" Stretch="Fill"/>
-                            </Border.Background>
-                        </Border>
-                        <StackPanel VerticalAlignment="Center">
-                            <TextBlock Text="RemoteX"
-                                       FontSize="13" FontWeight="SemiBold"
-                                       Foreground="{StaticResource Text}"/>
-                            <TextBlock Text="多协议远程管理"
-                                       FontSize="10"
-                                       Foreground="{StaticResource Overlay0}"/>
-                        </StackPanel>
-                    </DockPanel>
-                </Border>
+                <!-- FP_Servers: 服务器列表 -->
+                <Grid x:Name="FP_Servers" Visibility="Visible">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <!-- 0: header -->
+                        <RowDefinition Height="Auto"/>
+                        <!-- 1: search + buttons -->
+                        <RowDefinition Height="*"/>
+                        <!-- 2: server list -->
+                        <RowDefinition Height="Auto"/>
+                        <!-- 3: footer -->
+                    </Grid.RowDefinitions>
 
-                <!-- SEARCH + ACTION BUTTONS -->
-                <StackPanel Grid.Row="1" Margin="10,10,10,10">
-
-                    <!-- Search box -->
-                    <Border Background="{StaticResource Surface0}"
-                            CornerRadius="7" Height="34" Margin="0,0,0,8">
-                        <Grid>
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="34"/>
-                                <ColumnDefinition Width="*"/>
-                            </Grid.ColumnDefinitions>
-                            <TextBlock Grid.Column="0" Text="&#x2315;"
-                                       FontSize="17"
-                                       Foreground="{StaticResource Overlay0}"
-                                       HorizontalAlignment="Center"
-                                       VerticalAlignment="Center"/>
-                            <Grid Grid.Column="1">
-                                <TextBox x:Name="SearchBox"
-                                         Background="Transparent"
-                                         Foreground="{StaticResource Text}"
-                                         BorderThickness="0"
-                                         Padding="0,0,8,0"
-                                         VerticalContentAlignment="Center"
-                                         CaretBrush="{StaticResource Blue}"
-                                         SelectionBrush="{StaticResource Blue}"
-                                         FontSize="12"
-                                         TextChanged="SearchBox_TextChanged"/>
-                                <TextBlock Text="搜索服务器..."
-                                           FontSize="12"
-                                           Foreground="{StaticResource Overlay0}"
-                                           VerticalAlignment="Center"
-                                           Margin="0,0,8,0"
-                                           IsHitTestVisible="False">
-                                    <TextBlock.Style>
-                                        <Style TargetType="TextBlock">
-                                            <Setter Property="Visibility" Value="Collapsed"/>
-                                            <Style.Triggers>
-                                                <DataTrigger Binding="{Binding ElementName=SearchBox, Path=Text}" Value="">
-                                                    <Setter Property="Visibility" Value="Visible"/>
-                                                </DataTrigger>
-                                            </Style.Triggers>
-                                        </Style>
-                                    </TextBlock.Style>
-                                </TextBlock>
-                            </Grid>
-                        </Grid>
+                    <!-- APP HEADER -->
+                    <Border Grid.Row="0" Background="{StaticResource Crust}" Padding="14,14">
+                        <DockPanel>
+                            <Border DockPanel.Dock="Left"
+                                    Width="38" Height="38"
+                                    CornerRadius="10"
+                                    Margin="0,0,11,0">
+                                <Border.Background>
+                                    <ImageBrush ImageSource="/background.png" TileMode="None" Stretch="Fill"/>
+                                </Border.Background>
+                            </Border>
+                            <StackPanel VerticalAlignment="Center">
+                                <TextBlock Text="RemoteX"
+                                           FontSize="13" FontWeight="SemiBold"
+                                           Foreground="{StaticResource Text}"/>
+                                <TextBlock Text="多协议远程管理"
+                                           FontSize="10"
+                                           Foreground="{StaticResource Overlay0}"/>
+                            </StackPanel>
+                        </DockPanel>
                     </Border>
 
-                    <!-- Action buttons row 1: CRUD + Health -->
-                    <StackPanel Orientation="Horizontal">
-                        <Button x:Name="AddServerButton"
-                                Style="{StaticResource FlatBtnGreen}"
-                                Click="AddServerButton_Click"
-                                ToolTip="新增服务器 (Ctrl+N)">
-                            <StackPanel Orientation="Horizontal">
-                                <TextBlock Text="+" FontSize="15" FontWeight="Bold"
-                                           Margin="0,0,4,0" VerticalAlignment="Center"/>
-                                <TextBlock Text="新增" VerticalAlignment="Center"/>
-                            </StackPanel>
-                        </Button>
-                        <Button x:Name="EditServerButton"
-                                Style="{StaticResource FlatBtn}"
-                                Click="EditServerButton_Click"
-                                ToolTip="编辑选中服务器"
-                                Margin="4,0">
-                            <StackPanel Orientation="Horizontal">
-                                <TextBlock Text="&#x270E;" FontSize="13"
-                                           Margin="0,0,4,0" VerticalAlignment="Center"/>
-                                <TextBlock Text="编辑" VerticalAlignment="Center"/>
-                            </StackPanel>
-                        </Button>
-                        <Button x:Name="DeleteServerButton"
-                                Style="{StaticResource FlatBtnDanger}"
-                                Click="DeleteServerButton_Click"
-                                ToolTip="删除选中服务器 (Delete)">
-                            <StackPanel Orientation="Horizontal">
-                                <TextBlock Text="&#x2715;" FontSize="12"
-                                           Margin="0,0,4,0" VerticalAlignment="Center"/>
-                                <TextBlock Text="删除" VerticalAlignment="Center"/>
-                            </StackPanel>
-                        </Button>
-                        <Button x:Name="CheckAllButton"
-                                Style="{StaticResource FlatBtn}"
-                                Click="CheckAllButton_Click"
-                                ToolTip="检测全部服务器端口 (F5)"
-                                Margin="4,0,0,0">
-                            <StackPanel Orientation="Horizontal">
-                                <TextBlock Text="&#x2299;" FontSize="12"
-                                           Margin="0,0,4,0" VerticalAlignment="Center"/>
-                                <TextBlock Text="检测" VerticalAlignment="Center"/>
-                            </StackPanel>
-                        </Button>
-                    </StackPanel>
+                    <!-- SEARCH + ACTION BUTTONS -->
+                    <StackPanel Grid.Row="1" Margin="10,10,10,10">
 
-                    <!-- Action buttons row 2: Import / Export / Settings -->
-                    <StackPanel Orientation="Horizontal" Margin="0,3,0,0">
-                        <Button x:Name="ImportButton"
-                                Style="{StaticResource FlatBtn}"
-                                Click="ImportButton_Click"
-                                ToolTip="从备份文件批量导入服务器">
-                            <StackPanel Orientation="Horizontal">
-                                <TextBlock Text="&#x2193;" FontSize="14" FontWeight="Bold"
-                                           Margin="0,0,4,0" VerticalAlignment="Center"/>
-                                <TextBlock Text="导入" VerticalAlignment="Center"/>
-                            </StackPanel>
-                        </Button>
-                        <Button x:Name="ExportButton"
-                                Style="{StaticResource FlatBtn}"
-                                Click="ExportButton_Click"
-                                ToolTip="将服务器列表导出为备份文件"
-                                Margin="4,0,0,0">
-                            <StackPanel Orientation="Horizontal">
-                                <TextBlock Text="&#x2191;" FontSize="14" FontWeight="Bold"
-                                           Margin="0,0,4,0" VerticalAlignment="Center"/>
-                                <TextBlock Text="导出" VerticalAlignment="Center"/>
-                            </StackPanel>
-                        </Button>
-                        <Button x:Name="SettingsButton"
-                                Style="{StaticResource FlatBtn}"
-                                Click="SettingsButton_Click"
-                                ToolTip="打开设置 (Ctrl+,)"
-                                Margin="4,0,0,0">
-                            <StackPanel Orientation="Horizontal">
-                                <TextBlock Text="&#x2699;" FontSize="13"
-                                           Margin="0,0,4,0" VerticalAlignment="Center"/>
-                                <TextBlock Text="设置" VerticalAlignment="Center"/>
-                            </StackPanel>
-                        </Button>
-                        <Button x:Name="ProxyButton"
-                                Style="{StaticResource FlatBtn}"
-                                Click="ProxyButton_Click"
-                                ToolTip="管理 SOCKS5 代理（跳板机）"
-                                Margin="4,0,0,0">
-                            <StackPanel Orientation="Horizontal">
-                                <TextBlock Text="&#x1F517;" FontSize="12"
-                                           Margin="0,0,4,0" VerticalAlignment="Center"/>
-                                <TextBlock Text="代理" VerticalAlignment="Center"/>
-                            </StackPanel>
-                        </Button>
-                    </StackPanel>
-                </StackPanel>
-
-                <!-- 最近连接面板 -->
-                <Border x:Name="RecentSection"
-                        Grid.Row="2"
-                        Background="{StaticResource Crust}"
-                        BorderBrush="{StaticResource Surface0}"
-                        BorderThickness="0,0,0,1"
-                        Visibility="Collapsed">
-                    <StackPanel Margin="10,6,10,6">
-                        <DockPanel Margin="0,0,0,4">
-                            <TextBlock DockPanel.Dock="Left"
-                                       Text="最近连接"
-                                       FontSize="10" FontWeight="SemiBold"
-                                       Foreground="{StaticResource Overlay0}"
-                                       VerticalAlignment="Center"/>
-                            <Button DockPanel.Dock="Right"
-                                    x:Name="ClearRecentButton"
-                                    Style="{StaticResource FlatBtn}"
-                                    Click="ClearRecentButton_Click"
-                                    ToolTip="清除最近连接记录"
-                                    Padding="4,1"
-                                    FontSize="10">
-                                <TextBlock Text="清除" Foreground="{StaticResource Overlay0}"/>
-                            </Button>
-                        </DockPanel>
-                        <StackPanel x:Name="RecentList" Orientation="Vertical"/>
-                    </StackPanel>
-                </Border>
-
-                <!-- DIVIDER -->
-                <Border Grid.Row="3" Background="{StaticResource Surface0}"/>
-
-                <!-- SERVER LIST（支持拖拽排序） -->
-                <ListBox x:Name="ServerList"
-                         Grid.Row="4"
-                         Style="{StaticResource ServerListStyle}"
-                         ItemContainerStyle="{StaticResource ServerItemStyle}"
-                         SelectionChanged="ServerList_SelectionChanged"
-                         PreviewMouseRightButtonDown="ServerList_PreviewMouseRightButtonDown"
-                         PreviewMouseLeftButtonDown="ServerList_PreviewMouseLeftButtonDown"
-                         PreviewMouseMove="ServerList_PreviewMouseMove"
-                         MouseDoubleClick="ServerList_MouseDoubleClick"
-                         Drop="ServerList_Drop"
-                         DragOver="ServerList_DragOver"
-                         AllowDrop="True"
-                         ScrollViewer.CanContentScroll="False"
-                         VirtualizingPanel.IsVirtualizingWhenGrouping="False">
-
-                    <!-- 右键菜单 -->
-                    <ListBox.ContextMenu>
-                        <ContextMenu>
-                            <MenuItem Header="&#x1F4BB;  连接 (Enter)"
-                                      Foreground="#A6E3A1"
-                                      Click="MenuConnect_Click"/>
-                            <MenuItem Header="&#x1F50E;  检测端口"
-                                      Click="MenuCheck_Click"/>
-                            <MenuItem Header="&#x2715; 断开"
-                                      Click="MenuDisconnect_Click"/>
-                            <Separator/>
-                            <MenuItem Header="&#x1F4CB;  复制 IP"
-                                      Click="MenuCopyIp_Click"/>
-                            <MenuItem Header="&#x1F4CB;  复制地址"
-                                      Click="MenuCopyAddress_Click"/>
-                            <Separator/>
-                            <MenuItem Header="&#x270E; 编辑"
-                                      Click="MenuEdit_Click"/>
-                            <MenuItem Header="&#x1F4CB; 克隆 (Ctrl+D)"
-                                      Click="MenuClone_Click"/>
-                            <MenuItem Header="&#x2715; 删除 (Del)"
-                                      Foreground="#F38BA8"
-                                      Click="MenuDelete_Click"/>
-                        </ContextMenu>
-                    </ListBox.ContextMenu>
-
-                    <!-- 分组样式 -->
-                    <ListBox.GroupStyle>
-                        <GroupStyle ContainerStyle="{StaticResource GroupHeaderStyle}"/>
-                    </ListBox.GroupStyle>
-
-                    <!-- 数据模板 -->
-                    <ListBox.ItemTemplate>
-                        <DataTemplate>
-                            <StackPanel>
-                                <!-- 第一行：服务器名 + 健康状态 -->
-                                <Grid>
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="*"/>
-                                        <ColumnDefinition Width="Auto"/>
-                                    </Grid.ColumnDefinitions>
-                                    <TextBlock Grid.Column="0"
-                                               Text="{Binding Name}"
-                                               FontSize="13" FontWeight="SemiBold"
-                                               Foreground="{StaticResource Text}"
-                                               TextTrimming="CharacterEllipsis"/>
-                                    <TextBlock Grid.Column="1"
-                                               Text="{Binding HealthBadge}"
-                                               FontSize="10"
-                                               Margin="8,0,0,0">
+                        <!-- Search box -->
+                        <Border Background="{StaticResource Surface0}"
+                                CornerRadius="7" Height="34" Margin="0,0,0,8">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="34"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Text="&#x2315;"
+                                           FontSize="17"
+                                           Foreground="{StaticResource Overlay0}"
+                                           HorizontalAlignment="Center"
+                                           VerticalAlignment="Center"/>
+                                <Grid Grid.Column="1">
+                                    <TextBox x:Name="SearchBox"
+                                             Background="Transparent"
+                                             Foreground="{StaticResource Text}"
+                                             BorderThickness="0"
+                                             Padding="0,0,8,0"
+                                             VerticalContentAlignment="Center"
+                                             CaretBrush="{StaticResource Blue}"
+                                             SelectionBrush="{StaticResource Blue}"
+                                             FontSize="12"
+                                             TextChanged="SearchBox_TextChanged"/>
+                                    <TextBlock Text="搜索服务器..."
+                                               FontSize="12"
+                                               Foreground="{StaticResource Overlay0}"
+                                               VerticalAlignment="Center"
+                                               Margin="0,0,8,0"
+                                               IsHitTestVisible="False">
                                         <TextBlock.Style>
                                             <Style TargetType="TextBlock">
-                                                <Setter Property="Foreground" Value="{StaticResource Overlay0}"/>
+                                                <Setter Property="Visibility" Value="Collapsed"/>
                                                 <Style.Triggers>
-                                                    <DataTrigger Binding="{Binding HealthState}" Value="Online">
-                                                        <Setter Property="Foreground" Value="{StaticResource Green}"/>
-                                                    </DataTrigger>
-                                                    <DataTrigger Binding="{Binding HealthState}" Value="Checking">
-                                                        <Setter Property="Foreground" Value="{StaticResource Blue}"/>
-                                                    </DataTrigger>
-                                                    <DataTrigger Binding="{Binding HealthState}" Value="Offline">
-                                                        <Setter Property="Foreground" Value="#F38BA8"/>
+                                                    <DataTrigger Binding="{Binding ElementName=SearchBox, Path=Text}" Value="">
+                                                        <Setter Property="Visibility" Value="Visible"/>
                                                     </DataTrigger>
                                                 </Style.Triggers>
                                             </Style>
                                         </TextBlock.Style>
                                     </TextBlock>
                                 </Grid>
-                                <!-- 第二行：协议徽章 + 地址 -->
-                                <DockPanel Margin="0,3,0,0">
+                            </Grid>
+                        </Border>
+
+                        <!-- Action buttons: icon-only, wrapped -->
+                        <WrapPanel Orientation="Horizontal">
+                            <Button x:Name="AddServerButton"
+                                    Style="{StaticResource FlatBtnGreen}"
+                                    Click="AddServerButton_Click"
+                                    ToolTip="新增服务器 (Ctrl+N)"
+                                    Padding="7,6">
+                                <TextBlock Text="+" FontSize="15" FontWeight="Bold" VerticalAlignment="Center"/>
+                            </Button>
+                            <Button x:Name="EditServerButton"
+                                    Style="{StaticResource FlatBtn}"
+                                    Click="EditServerButton_Click"
+                                    ToolTip="编辑选中服务器"
+                                    Padding="7,6" Margin="2,0">
+                                <TextBlock Text="&#x270E;" FontSize="13" VerticalAlignment="Center"/>
+                            </Button>
+                            <Button x:Name="DeleteServerButton"
+                                    Style="{StaticResource FlatBtnDanger}"
+                                    Click="DeleteServerButton_Click"
+                                    ToolTip="删除选中服务器 (Delete)"
+                                    Padding="7,6" Margin="0,0,2,0">
+                                <TextBlock Text="&#x2715;" FontSize="12" VerticalAlignment="Center"/>
+                            </Button>
+                            <Button x:Name="CheckAllButton"
+                                    Style="{StaticResource FlatBtn}"
+                                    Click="CheckAllButton_Click"
+                                    ToolTip="检测全部服务器端口 (F5)"
+                                    Padding="7,6" Margin="0,0,2,0">
+                                <TextBlock Text="&#x2299;" FontSize="13" VerticalAlignment="Center"/>
+                            </Button>
+                            <Button x:Name="ProxyButton"
+                                    Style="{StaticResource FlatBtn}"
+                                    Click="ProxyButton_Click"
+                                    ToolTip="管理 SOCKS5 代理（跳板机）"
+                                    Padding="7,6">
+                                <TextBlock Text="&#x1F517;" FontSize="12" VerticalAlignment="Center"/>
+                            </Button>
+                        </WrapPanel>
+                    </StackPanel>
+
+                    <!-- SERVER LIST（支持拖拽排序） -->
+                    <ListBox x:Name="ServerList"
+                             Grid.Row="2"
+                             Style="{StaticResource ServerListStyle}"
+                             ItemContainerStyle="{StaticResource ServerItemStyle}"
+                             SelectionChanged="ServerList_SelectionChanged"
+                             PreviewMouseRightButtonDown="ServerList_PreviewMouseRightButtonDown"
+                             PreviewMouseLeftButtonDown="ServerList_PreviewMouseLeftButtonDown"
+                             PreviewMouseMove="ServerList_PreviewMouseMove"
+                             MouseDoubleClick="ServerList_MouseDoubleClick"
+                             Drop="ServerList_Drop"
+                             DragOver="ServerList_DragOver"
+                             AllowDrop="True"
+                             ScrollViewer.CanContentScroll="False"
+                             VirtualizingPanel.IsVirtualizingWhenGrouping="False">
+
+                        <!-- 右键菜单 -->
+                        <ListBox.ContextMenu>
+                            <ContextMenu>
+                                <MenuItem Header="&#x1F4BB;  连接 (Enter)"
+                                          Foreground="#A6E3A1"
+                                          Click="MenuConnect_Click"/>
+                                <MenuItem Header="&#x1F50E;  检测端口"
+                                          Click="MenuCheck_Click"/>
+                                <MenuItem Header="&#x2715; 断开"
+                                          Click="MenuDisconnect_Click"/>
+                                <Separator/>
+                                <MenuItem Header="&#x1F4CB;  复制 IP"
+                                          Click="MenuCopyIp_Click"/>
+                                <MenuItem Header="&#x1F4CB;  复制地址"
+                                          Click="MenuCopyAddress_Click"/>
+                                <Separator/>
+                                <MenuItem Header="&#x270E; 编辑"
+                                          Click="MenuEdit_Click"/>
+                                <MenuItem Header="&#x1F4CB; 克隆 (Ctrl+D)"
+                                          Click="MenuClone_Click"/>
+                                <MenuItem Header="&#x2715; 删除 (Del)"
+                                          Foreground="#F38BA8"
+                                          Click="MenuDelete_Click"/>
+                            </ContextMenu>
+                        </ListBox.ContextMenu>
+
+                        <!-- 分组样式 -->
+                        <ListBox.GroupStyle>
+                            <GroupStyle ContainerStyle="{StaticResource GroupHeaderStyle}"/>
+                        </ListBox.GroupStyle>
+
+                        <!-- 数据模板：单行 [协议徽章] [服务器名] [健康状态] -->
+                        <ListBox.ItemTemplate>
+                            <DataTemplate>
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+
                                     <!-- 协议徽章 -->
-                                    <Border DockPanel.Dock="Left"
+                                    <Border Grid.Column="0"
                                             CornerRadius="3" Padding="4,1"
-                                            Margin="0,0,6,0">
+                                            Margin="0,0,7,0"
+                                            VerticalAlignment="Center">
                                         <Border.Style>
                                             <Style TargetType="Border">
                                                 <Setter Property="Background" Value="#3B4252"/>
@@ -582,86 +623,293 @@
                                             </TextBlock.Style>
                                         </TextBlock>
                                     </Border>
-                                    <!-- 地址 -->
-                                    <TextBlock Text="{Binding AddressDisplay}"
-                                               FontSize="11"
-                                               Foreground="{StaticResource Overlay0}"
-                                               VerticalAlignment="Center"
-                                               TextTrimming="CharacterEllipsis"/>
-                                </DockPanel>
-                            </StackPanel>
-                        </DataTemplate>
-                    </ListBox.ItemTemplate>
-                </ListBox>
 
-                <!-- FOOTER -->
-                <Border Grid.Row="5"
-                        Background="{StaticResource Crust}"
-                        BorderBrush="{StaticResource Surface0}"
-                        BorderThickness="0,1,0,0"
-                        Padding="14,8">
-                    <TextBlock x:Name="ServerCountText"
-                               FontSize="11"
-                               Foreground="{StaticResource Overlay0}"
-                               HorizontalAlignment="Center"/>
-                </Border>
+                                    <!-- 服务器名 -->
+                                    <TextBlock Grid.Column="1"
+                                               Text="{Binding Name}"
+                                               FontSize="13" FontWeight="SemiBold"
+                                               Foreground="{StaticResource Text}"
+                                               TextTrimming="CharacterEllipsis"
+                                               VerticalAlignment="Center"/>
+
+                                    <!-- 健康状态 -->
+                                    <TextBlock Grid.Column="2"
+                                               Text="{Binding HealthBadge}"
+                                               FontSize="10"
+                                               Margin="8,0,0,0"
+                                               VerticalAlignment="Center">
+                                        <TextBlock.Style>
+                                            <Style TargetType="TextBlock">
+                                                <Setter Property="Foreground" Value="{StaticResource Overlay0}"/>
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding HealthState}" Value="Online">
+                                                        <Setter Property="Foreground" Value="{StaticResource Green}"/>
+                                                    </DataTrigger>
+                                                    <DataTrigger Binding="{Binding HealthState}" Value="Checking">
+                                                        <Setter Property="Foreground" Value="{StaticResource Blue}"/>
+                                                    </DataTrigger>
+                                                    <DataTrigger Binding="{Binding HealthState}" Value="Offline">
+                                                        <Setter Property="Foreground" Value="#F38BA8"/>
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </TextBlock.Style>
+                                    </TextBlock>
+                                </Grid>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+
+                    <!-- FOOTER -->
+                    <Border Grid.Row="3"
+                            Background="{StaticResource Crust}"
+                            BorderBrush="{StaticResource Surface0}"
+                            BorderThickness="0,1,0,0"
+                            Padding="14,8">
+                        <TextBlock x:Name="ServerCountText"
+                                   FontSize="11"
+                                   Foreground="{StaticResource Overlay0}"
+                                   HorizontalAlignment="Center"/>
+                    </Border>
+                </Grid>
+
+                <!-- FP_Recent: 最近连接面板 -->
+                <Grid x:Name="FP_Recent" Visibility="Collapsed">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+
+                    <!-- Header -->
+                    <Border Grid.Row="0"
+                            Background="{StaticResource Crust}"
+                            BorderBrush="{StaticResource Surface0}"
+                            BorderThickness="0,0,0,1"
+                            Padding="14,10">
+                        <DockPanel>
+                            <TextBlock DockPanel.Dock="Left"
+                                       Text="最近连接"
+                                       FontSize="12" FontWeight="SemiBold"
+                                       Foreground="{StaticResource Text}"
+                                       VerticalAlignment="Center"/>
+                            <Button DockPanel.Dock="Right"
+                                    Style="{StaticResource FlatBtn}"
+                                    Click="ClearRecentButton_Click"
+                                    ToolTip="清除最近连接记录"
+                                    Padding="6,3"
+                                    FontSize="11">
+                                <TextBlock Text="清除" Foreground="{StaticResource Overlay0}"/>
+                            </Button>
+                        </DockPanel>
+                    </Border>
+
+                    <!-- Recent list (populated by RefreshRecentPanel) -->
+                    <ScrollViewer Grid.Row="1"
+                                  VerticalScrollBarVisibility="Auto"
+                                  Padding="8,6">
+                        <StackPanel x:Name="RecentPanelList" Orientation="Vertical"/>
+                    </ScrollViewer>
+                </Grid>
+
+                <!-- FP_Forwards: 端口转发 -->
+                <Grid x:Name="FP_Forwards" Visibility="Collapsed">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+
+                    <!-- Header -->
+                    <Border Grid.Row="0" Background="{StaticResource Crust}" BorderBrush="{StaticResource Surface0}" BorderThickness="0,0,0,1" Padding="14,10">
+                        <DockPanel>
+                            <TextBlock Text="端口转发" FontSize="12" FontWeight="SemiBold" Foreground="{StaticResource Text}" VerticalAlignment="Center"/>
+                            <Button DockPanel.Dock="Right" Style="{StaticResource FlatBtnGreen}" Click="AddPortForward_Click" ToolTip="新增转发规则" Padding="6,3">
+                                <TextBlock Text="+" FontSize="15" FontWeight="Bold"/>
+                            </Button>
+                        </DockPanel>
+                    </Border>
+
+                    <!-- Rules list -->
+                    <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+                        <StackPanel x:Name="ForwardRulesList" Margin="8,6"/>
+                    </ScrollViewer>
+
+                    <!-- Proxy status section -->
+                    <Border Grid.Row="2" Background="{StaticResource Crust}" BorderBrush="{StaticResource Surface0}" BorderThickness="0,1,0,0" MaxHeight="220">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="*"/>
+                            </Grid.RowDefinitions>
+                            <DockPanel Grid.Row="0" Margin="14,8,14,4">
+                                <TextBlock Text="代理服务器" FontSize="10" FontWeight="SemiBold" Foreground="{StaticResource Overlay0}" VerticalAlignment="Center"/>
+                                <Button DockPanel.Dock="Right" Style="{StaticResource FlatBtn}" Click="ManageProxies_Click" Padding="6,2" FontSize="10">
+                                    <TextBlock Text="管理" Foreground="{StaticResource Overlay0}"/>
+                                </Button>
+                            </DockPanel>
+                            <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" MaxHeight="160">
+                                <StackPanel x:Name="ProxyStatusList" Margin="8,0,8,8"/>
+                            </ScrollViewer>
+                        </Grid>
+                    </Border>
+                </Grid>
+
+                <!-- FP_Commands: 快捷命令 -->
+                <Grid x:Name="FP_Commands" Visibility="Collapsed">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+
+                    <!-- Header -->
+                    <Border Grid.Row="0" Background="{StaticResource Crust}" BorderBrush="{StaticResource Surface0}" BorderThickness="0,0,0,1" Padding="14,10">
+                        <DockPanel>
+                            <TextBlock Text="快捷命令" FontSize="12" FontWeight="SemiBold" Foreground="{StaticResource Text}" VerticalAlignment="Center"/>
+                            <Button DockPanel.Dock="Right" Style="{StaticResource FlatBtnGreen}" Click="AddQuickCommand_Click" ToolTip="新增命令" Padding="6,3">
+                                <TextBlock Text="+" FontSize="15" FontWeight="Bold"/>
+                            </Button>
+                        </DockPanel>
+                    </Border>
+
+                    <!-- Search -->
+                    <Border Grid.Row="1" Background="{StaticResource Surface0}" CornerRadius="7" Height="34" Margin="10,8,10,2">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="30"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="⌕" FontSize="15" Foreground="{StaticResource Overlay0}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            <Grid Grid.Column="1">
+                                <TextBox x:Name="CommandSearchBox" Background="Transparent" Foreground="{StaticResource Text}" BorderThickness="0" Padding="0,0,6,0" VerticalContentAlignment="Center" FontSize="12" CaretBrush="{StaticResource Blue}" TextChanged="CommandSearch_Changed"/>
+                                <TextBlock Text="搜索命令..." FontSize="12" Foreground="{StaticResource Overlay0}" VerticalAlignment="Center" Margin="0,0,6,0" IsHitTestVisible="False">
+                                    <TextBlock.Style>
+                                        <Style TargetType="TextBlock">
+                                            <Setter Property="Visibility" Value="Collapsed"/>
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding ElementName=CommandSearchBox, Path=Text}" Value="">
+                                                    <Setter Property="Visibility" Value="Visible"/>
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBlock.Style>
+                                </TextBlock>
+                            </Grid>
+                        </Grid>
+                    </Border>
+
+                    <!-- Commands grouped list -->
+                    <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto">
+                        <StackPanel x:Name="CommandsList" Margin="8,4"/>
+                    </ScrollViewer>
+                </Grid>
+
+                <!-- FP_Sftp: SFTP 浏览器 -->
+                <Grid x:Name="FP_Sftp" Visibility="Collapsed">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+
+                    <Border Grid.Row="0" Background="{StaticResource Crust}" BorderBrush="{StaticResource Surface0}" BorderThickness="0,0,0,1" Padding="14,10">
+                        <TextBlock Text="SFTP 浏览器" FontSize="12" FontWeight="SemiBold" Foreground="{StaticResource Text}"/>
+                    </Border>
+
+                    <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+                        <StackPanel x:Name="SftpServerList" Margin="8,6"/>
+                    </ScrollViewer>
+                </Grid>
+
             </Grid>
         </Border>
 
-        <!-- ════════════════ MAIN AREA ════════════════ -->
-        <Grid Grid.Column="1">
+        <!-- ════════════════ MAIN AREA (col 2) ════════════════ -->
+        <Grid Grid.Column="2">
             <Grid.RowDefinitions>
                 <RowDefinition x:Name="ToolbarRow" Height="46"/>
                 <RowDefinition Height="*"/>
-                <RowDefinition x:Name="StatusBarRow" Height="34"/>
+                <RowDefinition x:Name="StatusBarRow" Height="28"/>
             </Grid.RowDefinitions>
 
-            <!-- TOOLBAR -->
+            <!-- TOOLBAR (tabs + status) -->
             <Border Grid.Row="0"
                     Background="{StaticResource Crust}"
                     BorderBrush="{StaticResource Surface0}"
                     BorderThickness="0,0,0,1">
-                <DockPanel Margin="10,0" VerticalAlignment="Center">
+                <DockPanel Margin="6,0" VerticalAlignment="Center" LastChildFill="True">
                     <Button x:Name="ToggleSidebarButton"
                             DockPanel.Dock="Left"
                             Style="{StaticResource FlatBtn}"
                             Click="ToggleSidebarButton_Click"
-                            ToolTip="收起侧边栏"
-                            Margin="0,0,4,0">
+                            ToolTip="收起功能面板"
+                            Margin="0,0,2,0"
+                            Padding="7,6">
                         <TextBlock x:Name="ToggleSidebarIcon"
                                    Text="&#x25C0;"
                                    FontSize="12"
                                    VerticalAlignment="Center"/>
                     </Button>
+                    <Button x:Name="ExitSplitButton"
+                            DockPanel.Dock="Right"
+                            Style="{StaticResource FlatBtn}"
+                            Click="ExitSplitButton_Click"
+                            ToolTip="退出分屏"
+                            Visibility="Collapsed"
+                            Margin="4,0,0,0">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="&#x229F;" FontSize="13"
+                                       Margin="0,0,4,0" VerticalAlignment="Center"/>
+                            <TextBlock Text="退出分屏" FontSize="12" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Button>
                     <Button x:Name="DisconnectButton"
-                            DockPanel.Dock="Left"
+                            DockPanel.Dock="Right"
                             Style="{StaticResource FlatBtnDanger}"
                             Click="DisconnectButton_Click"
                             ToolTip="断开当前连接 (Ctrl+W)"
                             Visibility="Collapsed"
-                            Margin="0,0,4,0">
+                            Margin="4,0,0,0">
                         <StackPanel Orientation="Horizontal">
                             <TextBlock Text="&#x2715;" FontSize="13"
                                        Margin="0,0,5,0" VerticalAlignment="Center"/>
                             <TextBlock Text="断开连接" FontSize="12" VerticalAlignment="Center"/>
                         </StackPanel>
                     </Button>
+                    <ScrollViewer DockPanel.Dock="Left"
+                                  x:Name="RdpTabScrollViewer"
+                                  HorizontalScrollBarVisibility="Auto"
+                                  VerticalScrollBarVisibility="Hidden"
+                                  MaxWidth="560"
+                                  Visibility="Collapsed">
+                        <StackPanel x:Name="RdpTabStrip"
+                                    Orientation="Horizontal"
+                                    VerticalAlignment="Center"/>
+                    </ScrollViewer>
                     <Border DockPanel.Dock="Left"
+                            x:Name="RdpTabSeparator"
                             Width="1"
                             Background="{StaticResource Surface1}"
-                            Margin="6,10"/>
+                            Margin="4,10"
+                            Visibility="Collapsed"/>
                     <TextBlock x:Name="StatusText"
-                               DockPanel.Dock="Left"
-                               Margin="10,0"
                                VerticalAlignment="Center"
                                Foreground="{StaticResource Overlay0}"
                                FontSize="12"
+                               Margin="8,0"
                                Text="未连接"/>
                 </DockPanel>
             </Border>
 
-            <!-- RDP 嵌入区 -->
+            <!-- 主内容区（支持左右分屏） -->
             <Grid Grid.Row="1" Background="{StaticResource Bg}">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition x:Name="PrimaryPaneCol"    Width="*"/>
+                    <ColumnDefinition x:Name="SplitSeparatorCol" Width="0"/>
+                    <ColumnDefinition x:Name="SecondaryPaneCol"  Width="0"/>
+                </Grid.ColumnDefinitions>
+
+                <!-- 主侧（左）：RDP / Terminal / 空闲面板 -->
+                <Grid Grid.Column="0">
                 <Grid x:Name="RdpContainer"
                       Visibility="Collapsed"
                       Background="{StaticResource Bg}"/>
@@ -759,46 +1007,45 @@
                         </StackPanel>
                     </ScrollViewer>
                 </Grid>
+                </Grid><!-- end primary pane -->
+
+                <!-- 分屏分隔条 -->
+                <GridSplitter x:Name="ContentSplitter"
+                              Grid.Column="1"
+                              Width="4"
+                              ResizeBehavior="PreviousAndNext"
+                              HorizontalAlignment="Stretch"
+                              Background="#313244"
+                              Visibility="Collapsed"/>
+
+                <!-- 次侧（右）：RDP 或由 WebView2 内部分屏显示 Terminal -->
+                <Grid x:Name="SecondaryPane"
+                      Grid.Column="2"
+                      Visibility="Collapsed"
+                      Background="{StaticResource Bg}">
+                    <Grid x:Name="RdpSecondaryContainer"
+                          Background="{StaticResource Bg}"/>
+                </Grid>
             </Grid>
 
-            <!-- STATUS BAR -->
+            <!-- STATUS BAR (simplified) -->
             <Border Grid.Row="2"
                     Background="{StaticResource Crust}"
                     BorderBrush="{StaticResource Surface0}"
                     BorderThickness="0,1,0,0">
                 <DockPanel Margin="8,0" LastChildFill="True">
-
                     <TextBlock x:Name="AppVersionText"
                                DockPanel.Dock="Right"
                                VerticalAlignment="Center"
                                Foreground="{StaticResource Surface1}"
                                FontSize="11"
                                Margin="0,0,4,0"/>
-
-                    <ScrollViewer DockPanel.Dock="Left"
-                                  x:Name="RdpTabScrollViewer"
-                                  HorizontalScrollBarVisibility="Auto"
-                                  VerticalScrollBarVisibility="Hidden"
-                                  MaxWidth="560"
-                                  Visibility="Collapsed">
-                        <StackPanel x:Name="RdpTabStrip"
-                                    Orientation="Horizontal"
-                                    VerticalAlignment="Center"/>
-                    </ScrollViewer>
-
-                    <Border DockPanel.Dock="Left"
-                            x:Name="RdpTabSeparator"
-                            Width="1"
-                            Background="{StaticResource Surface0}"
-                            Margin="4,8"
-                            Visibility="Collapsed"/>
-
                     <TextBlock x:Name="DescriptionText"
                                VerticalAlignment="Center"
                                Foreground="{StaticResource Overlay0}"
                                FontSize="11"
                                TextTrimming="CharacterEllipsis"
-                               Margin="8,0,0,0"/>
+                               Margin="4,0,0,0"/>
                 </DockPanel>
             </Border>
 
@@ -807,7 +1054,7 @@
                     Grid.RowSpan="3"
                     VerticalAlignment="Bottom"
                     HorizontalAlignment="Right"
-                    Margin="16,0,16,60"
+                    Margin="16,0,16,50"
                     Padding="14,10"
                     CornerRadius="6"
                     Background="#313244"

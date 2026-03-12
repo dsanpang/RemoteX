@@ -66,3 +66,6 @@ SocksServer/go.sum
 # OS
 .DS_Store
 Thumbs.db
+
+# Claude Code
+.claude/
