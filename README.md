@@ -1,6 +1,6 @@
 # RemoteX
 
-> 面向运维人员的多协议远程连接管理器，支持 RDP / SSH / Telnet，内置 SOCKS5 跳板代理。
+> 面向运维人员的多协议远程连接管理器，支持 RDP / SSH / Telnet，内置 SOCKS5 跳板代理。**v2** 起支持 SOCKS over TLS、端口转发、快捷命令、SFTP 浏览等。
 
 ---
 
@@ -15,11 +15,15 @@
 - 内置终端面板，SSH 支持**密码认证**和 **PEM/OpenSSH 私钥**认证
 - Telnet 支持**自动登录**（检测 login/password 提示后自动输入）
 - 终端字符正确透传，退格、方向键等控制字符均正常工作
+- **窗口尺寸同步**：SSH/Telnet 随终端面板缩放同步 NAWS/Window Change
+- 连接超时可在设置中配置（3–120 秒）
 
 ### SOCKS5 代理（跳板机）
 - 可配置多个 SOCKS5 代理（如多机房跳板机），每台服务器单独绑定
+- 支持 **SOCKS over TLS**：代理管理内可启用 TLS、证书名称/SNI、可选 SHA256 指纹固定
+- 代理配置使用**稳定 ID** 引用，改名不影响已有服务器绑定；密码本地 **DPAPI** 加密存储
 - RDP / SSH / Telnet 连接均可**按服务器独立路由**到指定代理
-- **存活检测**同样走代理路径，准确反映经跳板的真实可达状态
+- **存活检测**同样走代理路径；若服务器引用已删除的代理，会明确提示「代理配置缺失」而非静默直连
 
 ### 存活检测
 - 批量 TCP 端口探测，实时显示在线/离线/检测中状态
@@ -27,8 +31,8 @@
 
 ### 数据管理
 - 服务器信息存储于本地 **SQLite** 数据库
-- 支持 **JSON 格式导出/导入**（密码 AES 加密）
-- 配置文件位于 `%LocalAppData%\RemoteX\`
+- 支持 **v2 格式导出/导入**：含服务器列表与代理列表，跨机器恢复可一并还原代理配置
+- 导出可选 AES 加密，配置文件位于 `%LocalAppData%\RemoteX\`
 
 ---
 
@@ -115,8 +119,9 @@ proxy.exe run -port 1080 -user admin -pass yourpassword
 
 1. 点击主界面工具栏的 **「代理」** 按钮，打开代理管理窗口
 2. 添加跳板机信息（名称、地址、端口、用户名、密码）
-3. 在服务器编辑页面的「连接方式」中选择对应代理
-4. 点击存活检测，验证经代理的连通性
+3. 若跳板机启用 TLS，勾选「通过 TLS 连接代理服务端」，可选填证书名称（SNI）和 SHA256 指纹固定
+4. 在服务器编辑页面的「连接方式」中选择对应代理
+5. 点击存活检测，验证经代理的连通性
 
 ---
 
@@ -124,16 +129,22 @@ proxy.exe run -port 1080 -user admin -pass yourpassword
 
 ```
 RemoteX/
-├── MainWindow.*          # 主窗口（侧边栏、标签页、健康检测、CRUD）
+├── MainWindow.*          # 主窗口（侧边栏、标签页、健康检测、CRUD、端口转发、快捷命令）
 ├── ServerEditWindow.*    # 服务器新增/编辑弹窗
-├── SettingsWindow.*      # 全局设置
-├── ProxyManagerWindow.*  # SOCKS5 代理管理
-├── TerminalSessionService.cs   # SSH / Telnet 会话逻辑
+├── SettingsWindow.*      # 全局设置（含终端连接超时）
+├── ProxyManagerWindow.*  # SOCKS5 代理管理（含 TLS 配置）
+├── PortForwardEditWindow.*  # 端口转发规则编辑
+├── QuickCommandEditWindow.* # 快捷命令编辑
+├── SftpBrowserWindow.*  # SFTP 文件浏览
+├── TerminalSessionService.cs   # SSH / Telnet 会话（NAWS 窗口同步）
 ├── RdpSessionService.cs        # RDP 会话逻辑
-├── SocksProxyBridge.cs         # 客户端 SOCKS5 本地转发
+├── Socks5Helper.cs             # SOCKS5 隧道（含 TLS）统一封装
+├── SocksProxyBridge.cs         # 客户端 SOCKS5 本地转发（RDP 用）
 ├── ConnectionHealthService.cs  # TCP 存活探测（含代理路径）
 ├── ServerRepository.cs         # SQLite 数据访问
-├── ServerExportImport.cs       # JSON 导出/导入
+├── ServerExportImport.cs       # v2 导出/导入（服务器+代理）
+├── CloudSyncConfig.cs / CloudSyncService.cs  # 云同步配置
+├── ZmodemTransfer.cs           # Zmodem 传输
 ├── AppSettings.cs              # 配置持久化
 └── SocksServer/
     ├── main.go           # Go SOCKS5 代理服务端
@@ -157,6 +168,13 @@ RemoteX/
 ---
 
 ## 版本历史
+
+### v2.0
+- **代理**：稳定 ID 引用、代理密码 DPAPI 加密存储、支持 SOCKS over TLS（证书名称/SNI、SHA256 指纹固定）
+- **连接**：Socks5Helper 隧道封装，修复握手后连接被提前关闭；健康检查在代理缺失时明确提示，不再静默直连
+- **终端**：SSH/Telnet 窗口尺寸同步（NAWS/Window Change），设置页增加终端连接超时（3–120 秒）
+- **导出/导入**：v2 格式含服务器与代理列表，跨机器恢复可一并还原代理配置
+- **新增**：端口转发、快捷命令、SFTP 浏览、Zmodem 传输、云同步配置等
 
 ### v1.1
 - 新增独立代理管理窗口，支持配置多个 SOCKS5 跳板机
