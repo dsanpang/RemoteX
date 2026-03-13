@@ -391,33 +391,131 @@ public partial class SftpBrowserWindow : Window
     private async void BtnDelete_Click(object sender, RoutedEventArgs e)
     {
         if (_sftp == null) return;
-        if (FileList.SelectedItem is not SftpFileItem item)
+
+        var selectedItems = FileList.SelectedItems
+            .OfType<SftpFileItem>()
+            .GroupBy(item => item.FullPath, StringComparer.Ordinal)
+            .Select(group => group.First())
+            .ToList();
+
+        if (selectedItems.Count == 0 && FileList.SelectedItem is SftpFileItem fallback)
+            selectedItems.Add(fallback);
+
+        if (selectedItems.Count == 0)
         {
             AppMsg.Show(this, "请先选择一个文件或文件夹", "提示", AppMsgIcon.Info);
             return;
         }
 
-        var name = item.Name.TrimEnd('/');
-        var result = AppMsg.Show(this, $"确认删除「{name}」？此操作不可撤销。",
+        var result = AppMsg.Show(this, BuildDeleteConfirmMessage(selectedItems),
             "删除确认", AppMsgIcon.Warning, AppMsgButton.YesNo);
         if (result != AppMsgResult.Yes) return;
+
+        SetProgress(true,
+            selectedItems.Count == 1
+                ? $"正在删除 {selectedItems[0].Name.TrimEnd('/')}..."
+                : $"正在删除 {selectedItems.Count} 项...",
+            0);
+
+        var failedItems = new System.Collections.Generic.List<string>();
+        int deletedCount = 0;
 
         try
         {
             await Task.Run(() =>
             {
-                if (item.IsDirectory)
-                    _sftp.DeleteDirectory(item.FullPath);
-                else
-                    _sftp.DeleteFile(item.FullPath);
+                for (int i = 0; i < selectedItems.Count; i++)
+                {
+                    var current = selectedItems[i];
+                    var displayName = current.Name.TrimEnd('/');
+                    int progress = selectedItems.Count > 1 ? i * 100 / selectedItems.Count : 0;
+
+                    Dispatcher.Invoke(() =>
+                        SetProgress(true,
+                            selectedItems.Count == 1
+                                ? $"正在删除 {displayName}..."
+                                : $"正在删除 {displayName} ({i + 1}/{selectedItems.Count})...",
+                            progress));
+
+                    try
+                    {
+                        DeleteRemoteEntry(current.FullPath, current.IsDirectory);
+                        deletedCount++;
+                    }
+                    catch (Exception ex)
+                    {
+                        failedItems.Add($"{displayName}: {ex.Message}");
+                    }
+                }
             });
-            SetStatus($"已删除: {name}");
+
+            SetProgress(false);
             await NavigateToAsync(_currentPath);
+
+            if (failedItems.Count == 0)
+            {
+                SetStatus(selectedItems.Count == 1
+                    ? $"已删除: {selectedItems[0].Name.TrimEnd('/')}"
+                    : $"已删除 {deletedCount} 项");
+                return;
+            }
+
+            SetStatus(deletedCount > 0
+                ? $"已删除 {deletedCount} 项，{failedItems.Count} 项失败"
+                : "删除失败");
+
+            var details = string.Join(Environment.NewLine, failedItems.Take(5));
+            if (failedItems.Count > 5)
+                details += $"{Environment.NewLine}... 另有 {failedItems.Count - 5} 项失败";
+
+            AppMsg.Show(this,
+                $"删除未全部成功：\n{details}",
+                deletedCount > 0 ? "部分失败" : "错误",
+                deletedCount > 0 ? AppMsgIcon.Warning : AppMsgIcon.Error);
         }
         catch (Exception ex)
         {
+            SetProgress(false);
             AppMsg.Show(this, $"删除失败：\n{ex.Message}", "错误", AppMsgIcon.Error);
         }
+    }
+
+    private string BuildDeleteConfirmMessage(System.Collections.Generic.IReadOnlyList<SftpFileItem> items)
+    {
+        if (items.Count == 1)
+        {
+            var name = items[0].Name.TrimEnd('/');
+            return $"确认删除「{name}」？此操作不可撤销。";
+        }
+
+        var preview = string.Join("、", items.Take(3).Select(item => $"「{item.Name.TrimEnd('/')}」"));
+        if (items.Count > 3)
+            preview += $" 等 {items.Count} 项";
+
+        return $"确认删除 {preview}？此操作不可撤销。";
+    }
+
+    private void DeleteRemoteEntry(string fullPath, bool isDirectory)
+    {
+        if (_sftp == null) return;
+
+        if (!isDirectory)
+        {
+            _sftp.DeleteFile(fullPath);
+            return;
+        }
+
+        var children = _sftp.ListDirectory(fullPath)
+            .Where(file => file.Name != "." && file.Name != "..")
+            .ToList();
+
+        foreach (var child in children)
+        {
+            bool childIsDirectory = child.IsDirectory && !(child.Attributes?.IsSymbolicLink ?? false);
+            DeleteRemoteEntry(child.FullName, childIsDirectory);
+        }
+
+        _sftp.DeleteDirectory(fullPath);
     }
 
     private async void BtnRefresh_Click(object sender, RoutedEventArgs e)

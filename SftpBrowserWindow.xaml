@@ -169,6 +169,7 @@
 
             <!-- File list -->
             <ListView x:Name="FileList" Grid.Column="2"
+                      SelectionMode="Extended"
                       MouseDoubleClick="FileList_MouseDoubleClick">
                 <ListView.View>
                     <GridView>

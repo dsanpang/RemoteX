@@ -171,9 +171,7 @@
       term.onSelectionChange(() => {
         const sel = term.getSelection();
         if (sel) {
-          window.chrome.webview.postMessage(
-            JSON.stringify({ type: 'copy-text', sessionId: id, data: sel })
-          );
+          sendCopyText(id, sel);
         }
       });
 
@@ -266,6 +264,31 @@
       );
     }
 
+    function getTargetSessionId() {
+      return activeId !== null ? activeId : splitPrimId;
+    }
+
+    function sendCopyText(id, text) {
+      if (!text) return false;
+      window.chrome.webview.postMessage(
+        JSON.stringify({ type: 'copy-text', sessionId: id, data: text })
+      );
+      return true;
+    }
+
+    function copySelection(id) {
+      if (id === null || !sessions[id]) return false;
+      return sendCopyText(id, sessions[id].term.getSelection());
+    }
+
+    function requestPaste(id) {
+      if (id === null) return false;
+      window.chrome.webview.postMessage(
+        JSON.stringify({ type: 'paste-request', sessionId: id })
+      );
+      return true;
+    }
+
     function syncSessionLayout(id, { notify = true, focus = false } = {}) {
       if (!sessions[id]) return false;
       const { wrap, fit, term } = sessions[id];
@@ -298,14 +321,10 @@
       if (e.ctrlKey && e.shiftKey) {
         if (e.key === 'C' || e.key === 'c') {
           e.preventDefault();
+          copySelection(getTargetSessionId());
         } else if (e.key === 'V' || e.key === 'v') {
           e.preventDefault();
-          const target = activeId !== null ? activeId : splitPrimId;
-          if (target !== null) {
-            window.chrome.webview.postMessage(
-              JSON.stringify({ type: 'paste-request', sessionId: target })
-            );
-          }
+          requestPaste(getTargetSessionId());
         }
       }
     });
@@ -365,17 +384,14 @@
 
     document.getElementById('ctx-copy').addEventListener('click', () => {
       hideCtxMenu();
-      if (activeId && sessions[activeId]) sessions[activeId].term.focus();
+      const target = getTargetSessionId();
+      copySelection(target);
+      if (target !== null && sessions[target]) sessions[target].term.focus();
     });
 
     document.getElementById('ctx-paste').addEventListener('click', () => {
       hideCtxMenu();
-      const target = activeId !== null ? activeId : splitPrimId;
-      if (target !== null) {
-        window.chrome.webview.postMessage(
-          JSON.stringify({ type: 'paste-request', sessionId: target })
-        );
-      }
+      requestPaste(getTargetSessionId());
     });
 
     document.getElementById('ctx-selall').addEventListener('click', () => {
