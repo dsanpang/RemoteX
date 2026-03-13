@@ -3,23 +3,21 @@ using System.Collections.Generic;
 using System.IO;
 using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
 
 namespace RemoteX;
 
 /// <summary>
 /// ZMODEM 文件传输协议实现。
-/// 支持接收（服务端 sz → 客户端下载）和发送（服务端 rz ← 客户端上传）。
-/// 直接操作 SSH ShellStream，不经过 xterm.js。
+/// 发送侧使用保守的 16-bit CRC，接收侧兼容 32-bit CRC；直接操作 SSH ShellStream。
 /// </summary>
 internal sealed class ZmodemTransfer
 {
-    // ── 协议常量 ──────────────────────────────────────────────────────────────
-
     private const byte ZPAD   = 0x2A;
     private const byte ZDLESC = 0x18;
-    private const byte ZBIN   = 0x41; // binary header CRC-16
-    private const byte ZHEX   = 0x42; // hex header
-    private const byte ZBIN32 = 0x43; // binary header CRC-32
+    private const byte ZBIN   = 0x41;
+    private const byte ZHEX   = 0x42;
+    private const byte ZBIN32 = 0x43;
     private const byte XON    = 0x11;
     private const byte XOFF   = 0x13;
 
@@ -38,269 +36,340 @@ internal sealed class ZmodemTransfer
     private const byte ZFERR   = 12;
     private const byte ZCAN    = 16;
 
-    private const byte ZCRCE = 0x68; // subpacket ends, header follows
-    private const byte ZCRCG = 0x69; // subpacket continues, no ACK
-    private const byte ZCRCQ = 0x6A; // subpacket continues, ACK expected
-    private const byte ZCRCW = 0x6B; // subpacket ends, ACK expected
+    private const byte ZCRCE = 0x68;
+    private const byte ZCRCG = 0x69;
+    private const byte ZCRCQ = 0x6A;
+    private const byte ZCRCW = 0x6B;
+
+    private const byte ZRUB0 = 0x6C;
+    private const byte ZRUB1 = 0x6D;
 
     private const byte CANFDX  = 0x01;
     private const byte CANOVIO = 0x02;
     private const byte CANFC32 = 0x20;
+    private const byte ESCCTL  = 0x40;
 
-    private const int ChunkSize = 8192;
-
-    // ── 内部状态 ──────────────────────────────────────────────────────────────
+    private const int ChunkSize = 4096; // 4KB 块大小（lrzsz 默认 8KB，保守取 4KB）
 
     private readonly Stream       _stream;
     private readonly Queue<byte>  _pushback = new();
-    private bool _useCrc32 = true; // lrzsz 默认使用 CRC-32
+    private bool _useCrc32 = false;
+    private string _waitReason = "等待 ZMODEM 数据";
 
-    // ── 外部回调（由 TerminalSessionService 注入）──────────────────────────────
+    private readonly byte[] _readBuf = new byte[4096];
+    private int _readBufPos;
+    private int _readBufLen;
 
-    /// <summary>传输进度文本（在 UI 线程外调用）。</summary>
+    public Func<bool>? CheckDataAvailable;
+    private const int ReadPollMs    = 50;
+    private const int ReadTimeoutMs = 15_000;
+
     public Action<string>? StatusChanged;
-
-    /// <summary>下载完成：文件名 + 数据，需在 UI 线程弹 SaveFileDialog。</summary>
     public Action<string, byte[]>? FileReceived;
-
-    /// <summary>上传：弹 OpenFileDialog，返回 (文件名, 数据)；取消则抛 OCE。</summary>
     public Func<Task<(string Name, byte[] Data)>>? RequestUploadFile;
 
-    // ── 构造 ──────────────────────────────────────────────────────────────────
-
-    /// <param name="stream">SSH ShellStream</param>
-    /// <param name="lookahead">已从流中读取但尚未处理的字节</param>
     public ZmodemTransfer(Stream stream, ReadOnlySpan<byte> lookahead)
     {
         _stream = stream;
-        foreach (var b in lookahead)
-            _pushback.Enqueue(b);
+        foreach (var b in lookahead) _pushback.Enqueue(b);
     }
 
-    // ── 公开入口 ──────────────────────────────────────────────────────────────
-
-    /// <summary>
-    /// 运行一次完整的 ZMODEM 会话（接收 or 发送，由服务端第一帧决定）。
-    /// 在后台线程调用。
-    /// </summary>
-    public void Run(CancellationToken ct)
+    public bool Run(CancellationToken ct)
     {
         try
         {
-            var (frameType, _) = ReadHeader(ct);
+            var (frameType, frameData) = ReadHeader(ct);
 
-            if (frameType == ZRQINIT)
-                RunReceive(ct);          // 服务端 sz → 我们下载
+            if (frameType == ZFIN)
+            {
+                SendHexHeader(ZFIN, 0, ct);
+                return false;
+            }
+
+            if (frameType == ZRQINIT || frameType == ZFILE)
+            {
+                RunReceive(ct, frameType, frameData);
+            }
             else if (frameType == ZRINIT)
-                RunSend(ct);             // 服务端 rz → 我们上传
+            {
+                RunSend(ct);
+            }
             else
+            {
                 SendAbort();
+            }
+
+            return true;
         }
-        catch (OperationCanceledException) { }
+        catch (OperationCanceledException) { return false; }
         catch (Exception ex)
         {
+            AppLogger.Error("zmodem protocol error", ex);
             StatusChanged?.Invoke($"ZMODEM 错误：{ex.Message}");
             try { SendAbort(); } catch { }
+            return true;
         }
     }
 
     // ── 接收流程（服务端 sz） ─────────────────────────────────────────────────
 
-    private void RunReceive(CancellationToken ct)
+    private void RunReceive(CancellationToken ct, byte firstType, uint firstData)
     {
-        SendZrinit(ct);
+        if (firstType == ZFILE)
+            HandleZfile(firstData, ct);
+        else
+            SendZrinit(ct);
 
         while (!ct.IsCancellationRequested)
         {
+            _waitReason = "等待发送端下一帧（ZFILE/ZSINIT/ZFIN）";
             var (type, data) = ReadHeader(ct);
-
             switch (type)
             {
-                case ZFILE:
-                    HandleZfile(data, ct);
+                case ZFILE: HandleZfile(data, ct); break;
+                case ZSINIT:
+                    try { ReadDataSubpacket(ct); } catch { }
+                    SendHexHeader(ZACK, 0, ct);
                     break;
-                case ZFIN:
-                    SendHexHeader(ZFIN, 0, ct);
-                    return;
+                case ZFIN: SendHexHeader(ZFIN, 0, ct); return;
+                case ZRQINIT: SendZrinit(ct); break;
                 case ZRINIT:
-                    // 多文件：继续等待
-                    break;
-                default:
-                    break;
+                case ZEOF: break;
             }
         }
     }
 
     private void HandleZfile(uint _, CancellationToken ct)
     {
-        // ZFILE 数据子包：filename\0size\0...
         var (subData, _) = ReadDataSubpacket(ct);
         var nulPos = Array.IndexOf(subData, (byte)0);
-        var filename = nulPos >= 0
-            ? Encoding.UTF8.GetString(subData, 0, nulPos)
-            : "downloaded_file";
+        var filename = nulPos >= 0 ? Encoding.UTF8.GetString(subData, 0, nulPos) : "downloaded_file";
 
         long fileSize = 0;
         if (nulPos >= 0 && nulPos + 1 < subData.Length)
         {
-            var meta = Encoding.ASCII.GetString(subData, nulPos + 1,
-                subData.Length - nulPos - 1);
-            var parts = meta.Split(' ', 2);
-            long.TryParse(parts[0], out fileSize);
+            var meta = Encoding.ASCII.GetString(subData, nulPos + 1, subData.Length - nulPos - 1);
+            long.TryParse(meta.Split(' ', 2)[0], out fileSize);
         }
 
         StatusChanged?.Invoke($"接收文件：{filename}（{FormatSize(fileSize)}）");
-
-        // 发送 ZRPOS(0) 告知从头接收
         SendHexHeader(ZRPOS, 0, ct);
 
-        // 接收文件数据
         var ms = new MemoryStream(fileSize > 0 ? (int)Math.Min(fileSize, 64 * 1024 * 1024) : 65536);
         long received = 0;
-        bool done = false;
 
-        while (!done && !ct.IsCancellationRequested)
+        while (!ct.IsCancellationRequested)
         {
-            var (hdrType, hdrData) = ReadHeader(ct);
+            _waitReason = $"等待文件数据或 ZEOF（{filename}）";
+            var (hdrType, _) = ReadHeader(ct);
+
             if (hdrType == ZDATA)
             {
-                while (!done)
+                bool blockDone = false;
+                while (!blockDone && !ct.IsCancellationRequested)
                 {
                     var (chunk, endType) = ReadDataSubpacket(ct);
                     ms.Write(chunk, 0, chunk.Length);
                     received += chunk.Length;
 
                     if (fileSize > 0)
-                        StatusChanged?.Invoke(
-                            $"接收：{filename}  {FormatSize(received)} / {FormatSize(fileSize)}");
+                        StatusChanged?.Invoke($"接收：{filename}  {FormatSize(received)} / {FormatSize(fileSize)}");
 
-                    if (endType == ZCRCE || endType == ZCRCW)
+                    switch (endType)
                     {
-                        done = true;
+                        case ZCRCE: 
+                            blockDone = true; 
+                            break;
+                        case ZCRCW:
+                            SendHexHeader(ZACK, (uint)received, ct); 
+                            blockDone = true; 
+                            break;
+                        case ZCRCQ: 
+                            SendHexHeader(ZACK, (uint)received, ct); 
+                            break;
+                        case ZCRCG: 
+                            break;
                     }
-                    else if (endType == ZCRCQ)
-                    {
-                        SendHexHeader(ZACK, (uint)received, ct);
-                    }
-                    // ZCRCG: continue without ACK
                 }
             }
             else if (hdrType == ZEOF)
             {
-                done = true;
-            }
-            else if (hdrType == ZABORT || hdrType == ZFIN || hdrType == ZCAN)
-            {
-                SendAbort();
+                var fileData = ms.ToArray();
+                StatusChanged?.Invoke($"文件接收完成：{filename}（{FormatSize(fileData.Length)}）");
+                FileReceived?.Invoke(filename, fileData);
+                SendZrinit(ct);
                 return;
             }
+            else if (hdrType == ZABORT || hdrType == ZCAN) { SendAbort(); return; }
+            else if (hdrType == ZFIN) { SendHexHeader(ZFIN, 0, ct); return; }
         }
-
-        var fileData = ms.ToArray();
-        StatusChanged?.Invoke($"文件接收完成：{filename}（{FormatSize(fileData.Length)}）");
-        FileReceived?.Invoke(filename, fileData);
-
-        // 告知服务端准备下一文件
-        SendZrinit(ct);
     }
 
     // ── 发送流程（服务端 rz） ─────────────────────────────────────────────────
 
     private void RunSend(CancellationToken ct)
     {
-        if (RequestUploadFile == null)
+        if (RequestUploadFile == null) { SendAbort(); return; }
+
+        string fileName; byte[] fileData;
+        try
         {
-            StatusChanged?.Invoke("未配置文件上传处理器");
-            SendAbort();
-            return;
+            var fileTask = RequestUploadFile();
+            fileTask.Wait(ct);
+            (fileName, fileData) = fileTask.Result;
         }
-
-        // 检查服务端是否支持 CRC-32
-        // ZRINIT data byte[0] = flags, byte[2..3] = buffer size
-        // CANFC32 = 0x20 in flags[0]
-        // （我们已经消费了 ZRINIT header，flags 在 data 低字节）
-
-        Task<(string Name, byte[] Data)> fileTask = RequestUploadFile();
-        fileTask.Wait(ct);
-        var (fileName, fileData) = fileTask.Result;
+        catch { SendAbort(); return; }
 
         StatusChanged?.Invoke($"发送文件：{fileName}（{FormatSize(fileData.Length)}）");
 
-        // 发送 ZFILE 帧
-        SendZfile(fileName, fileData.Length, ct);
+        SendZfile16(fileName, fileData.Length, ct);
 
-        // 等待 ZRPOS
-        var (respType, _) = ReadHeader(ct);
-        if (respType == ZSKIP || respType == ZABORT)
+        // ── 阶段一：等待 ZRPOS ────────────────────────────────────────────────
+        // lrzsz 在等待我们发 ZFILE 期间会反复重传 ZRINIT；这些旧帧积压在
+        // ShellStream 缓冲区，发完 ZFILE 后必须全部丢弃，只保留 ZRPOS。
+        uint startOffset = 0;
+        while (!ct.IsCancellationRequested)
         {
-            StatusChanged?.Invoke("服务端拒绝接收文件");
-            return;
+            _waitReason = "等待服务端响应 ZRPOS/ZSKIP（上传准备阶段）";
+            var (r, d) = ReadHeader(ct);
+            if (r == ZRPOS)  { startOffset = d; break; }
+            if (r == ZSKIP || r == ZABORT || r == ZFERR)
+            {
+                StatusChanged?.Invoke("服务端拒绝接收文件或中止了传输。");
+                return;
+            }
+            // ZRINIT（重传）、ZACK 等均忽略
         }
 
-        // 发送数据
-        SendFileData(fileData, ct);
+        // ── 阶段二：发送数据，等待最终结果 ───────────────────────────────────
+        // 只有在此处（已成功发出文件数据并收到 ZEOF 响应之后）收到的 ZRINIT
+        // 才代表传输完成，不会与阶段一的残留重传帧混淆。
+        if (startOffset > 0)
+            StatusChanged?.Invoke($"服务端要求断点续传（偏移 {FormatSize(startOffset)}）");
 
-        // 等待服务端确认
-        var (finType, _) = ReadHeader(ct);
-        if (finType == ZRINIT)
+        SendFileData16(fileData, startOffset, ct);
+
+        bool waitingForFinishAck = false;
+        while (!ct.IsCancellationRequested)
         {
-            // 成功：发送 ZFIN
-            SendHexHeader(ZFIN, 0, ct);
-            // 等待服务端 ZFIN
-            try { ReadHeader(ct); } catch { }
-        }
+            _waitReason = waitingForFinishAck
+                ? "等待服务端响应 ZFIN/ZRPOS（上传收尾阶段）"
+                : "等待服务端响应 ZRINIT/ZRPOS（上传完成确认）";
+            var (r, d) = ReadHeader(ct);
 
-        StatusChanged?.Invoke($"文件发送完成：{fileName}");
+            if (waitingForFinishAck)
+            {
+                if (r == ZFIN)
+                {
+                    SendOverAndOut();
+                    StatusChanged?.Invoke($"文件发送完成：{fileName}");
+                    return;
+                }
+
+                if (r == ZRINIT)
+                {
+                    // 对端还在等待会话关闭，重发 ZFIN 即可。
+                    SendHexHeader(ZFIN, 0, ct);
+                    continue;
+                }
+
+                if (r == ZRPOS)
+                {
+                    waitingForFinishAck = false;
+                    startOffset = d;
+                    StatusChanged?.Invoke($"重传（偏移 {FormatSize(startOffset)}）");
+                    SendFileData16(fileData, startOffset, ct);
+                    continue;
+                }
+
+                if (r == ZSKIP || r == ZABORT || r == ZFERR || r == ZCAN)
+                {
+                    StatusChanged?.Invoke("服务端在收尾阶段中止了传输。");
+                    return;
+                }
+
+                // ZACK 等收尾期间的中途信息忽略
+                continue;
+            }
+
+            if (r == ZRINIT)
+            {
+                // 文件主体已经确认完成，继续走 ZFIN -> ZFIN -> OO 收尾，
+                // 否则 lrzsz rz 会将文件视为异常接收并执行 removed 清理。
+                waitingForFinishAck = true;
+                SendHexHeader(ZFIN, 0, ct);
+                continue;
+            }
+
+            if (r == ZRPOS)
+            {
+                // CRC 校验失败，从指定偏移重传
+                startOffset = d;
+                StatusChanged?.Invoke($"重传（偏移 {FormatSize(startOffset)}）");
+                SendFileData16(fileData, startOffset, ct);
+            }
+            else if (r == ZSKIP || r == ZABORT || r == ZFERR)
+            {
+                StatusChanged?.Invoke("服务端拒绝接收文件或中止了传输。");
+                return;
+            }
+            // ZACK 等中途信息忽略
+        }
     }
 
-    private void SendZfile(string filename, long fileSize, CancellationToken ct)
+    private void SendZfile16(string filename, long fileSize, CancellationToken ct)
     {
-        // ZFILE header with offset=0
-        var hdr = BuildBinHeader32(ZFILE, 0);
+        // 与 lrzsz 默认行为保持一致：ZFILE 的 ZF0/ZF1/ZF2/ZF3 先全部置 0，
+        // 由接收端按本地策略决定；多数实现会把 0 视为普通二进制传输。
+        uint hdrData = MakeHeaderData();
+        var hdr = BuildBinHeader16(ZFILE, hdrData);
         _stream.Write(hdr, 0, hdr.Length);
 
-        // ZFILE data subpacket: filename\0size_decimal\0
-        var meta = Encoding.ASCII.GetBytes($"{filename}\0{fileSize} 0 0 0\0");
-        var pkt  = BuildDataSubpacket(meta, 0, meta.Length, ZCRCW);
+        var nameBytes = Encoding.UTF8.GetBytes(filename);
+        var sizeBytes = Encoding.ASCII.GetBytes($"{fileSize} 0 0 0 0");
+        var meta      = new byte[nameBytes.Length + 1 + sizeBytes.Length + 1];
+        Array.Copy(nameBytes, 0, meta, 0, nameBytes.Length);
+        Array.Copy(sizeBytes, 0, meta, nameBytes.Length + 1, sizeBytes.Length);
+        var pkt = BuildDataSubpacket16(meta, 0, meta.Length, ZCRCW);
         _stream.Write(pkt, 0, pkt.Length);
         _stream.Flush();
     }
 
-    private void SendFileData(byte[] data, CancellationToken ct)
+    private void SendFileData16(byte[] data, uint startOffset, CancellationToken ct)
     {
-        int offset = 0;
-        long total  = data.Length;
+        int total = data.Length;
+        int offset = (int)Math.Min((long)startOffset, total);
 
-        while (offset < data.Length && !ct.IsCancellationRequested)
+        if (offset >= total)
         {
-            // Send ZDATA header with current offset
-            var hdr = BuildBinHeader32(ZDATA, (uint)offset);
-            _stream.Write(hdr, 0, hdr.Length);
-
-            // Send chunks; use ZCRCQ for intermediate (expect ACK) and ZCRCW for last in block
-            int chunkLen = Math.Min(ChunkSize, data.Length - offset);
-            bool isLast  = offset + chunkLen >= data.Length;
-            byte endType = isLast ? ZCRCW : ZCRCQ;
-
-            var pkt = BuildDataSubpacket(data, offset, chunkLen, endType);
-            _stream.Write(pkt, 0, pkt.Length);
-            _stream.Flush();
-
-            offset += chunkLen;
-
-            if (!isLast)
-            {
-                // Wait for ZACK before sending next chunk
-                var (ackType, _) = ReadHeader(ct);
-                if (ackType == ZABORT) return;
-            }
-
-            StatusChanged?.Invoke(
-                $"发送：{FormatSize(offset)} / {FormatSize(total)}");
+            SendBinHeader16(ZEOF, (uint)total);
+            return;
         }
 
-        // ZEOF
-        SendHexHeader(ZEOF, (uint)data.Length, ct);
+        // 发送 ZDATA 帧头（包含起始偏移），告知接收方从哪里开始
+        var hdr = BuildBinHeader16(ZDATA, (uint)offset);
+        _stream.Write(hdr, 0, hdr.Length);
+
+        // ZCRCG 流式传输：中间块不等 ACK（与 lrzsz sz 的标准行为一致）；
+        // 最后块用 ZCRCE（"帧头紧随"，无 ACK）。
+        // 这样整个文件数据一次性发出，速度快，且 lrzsz rz 验证完整数据 CRC 后
+        // 再发 ZRINIT（成功）或 ZRPOS(N)（从偏移 N 重传）。
+        while (offset < total && !ct.IsCancellationRequested)
+        {
+            int chunkLen = Math.Min(ChunkSize, total - offset);
+            bool isLast  = offset + chunkLen >= total;
+            byte endType = isLast ? ZCRCE : ZCRCG; // 最后块 ZCRCE；中间块 ZCRCG
+
+            var pkt = BuildDataSubpacket16(data, offset, chunkLen, endType);
+            _stream.Write(pkt, 0, pkt.Length);
+
+            offset += chunkLen;
+            StatusChanged?.Invoke($"发送：{FormatSize(offset)} / {FormatSize(total)}");
+        }
+
+        // 所有数据发完后立即 Flush，然后发 ZEOF（偏移 = 文件总大小）
+        _stream.Flush();
+        SendBinHeader16(ZEOF, (uint)total);
     }
 
     // ── Frame 读取 ────────────────────────────────────────────────────────────
@@ -310,78 +379,61 @@ internal sealed class ZmodemTransfer
         int pads = 0;
         while (true)
         {
-            ct.ThrowIfCancellationRequested();
             int b = ReadRaw(ct);
-            if (b < 0) throw new EndOfStreamException("ZMODEM: stream ended");
-
             if (b == ZPAD) { pads++; continue; }
-
             if (pads >= 1 && b == ZDLESC)
             {
                 int htype = ReadRaw(ct);
-                if (htype < 0) throw new EndOfStreamException("ZMODEM: stream ended");
-
-                return htype switch
+                if (htype == ZHEX)
                 {
-                    ZHEX   => ReadHexHeader(ct),
-                    ZBIN   => ReadBinHeader(ct, crc32: false),
-                    ZBIN32 => ReadBinHeader(ct, crc32: true),
-                    _      => throw new InvalidDataException($"ZMODEM: unknown header type 0x{htype:X2}")
-                };
+                    var header = ReadHexHeader(ct);
+                    return header;
+                }
+                if (htype == ZBIN)
+                {
+                    _useCrc32 = false;
+                    var header = ReadBinHeader(ct, false);
+                    return header;
+                }
+                if (htype == ZBIN32)
+                {
+                    _useCrc32 = true;
+                    var header = ReadBinHeader(ct, true);
+                    return header;
+                }
+                throw new InvalidDataException($"未知头部 0x{htype:X2}");
             }
-
-            pads = 0;
+            pads = 0; 
         }
     }
 
     private (byte Type, uint Data) ReadHexHeader(CancellationToken ct)
     {
-        // Read 14 hex digits (skip CR/LF/XON mixed in)
         var hex = new byte[14];
         int pos = 0;
         while (pos < 14)
         {
             int b = ReadRaw(ct);
-            if (b < 0) throw new EndOfStreamException();
             if (b == '\r' || b == '\n' || b == XON || b == XOFF) continue;
             hex[pos++] = (byte)b;
         }
-        // Consume trailing CR LF XON (push back non-whitespace)
-        while (true)
-        {
-            int b = ReadRaw(ct);
-            if (b < 0) break;
-            if (b != '\r' && b != '\n' && b != XON && b != XOFF) { Unget((byte)b); break; }
-        }
+
+        // 核心修复 1：绝对禁止使用 while(true) 去吞掉剩余换行符！由于服务端随时可能挂起等待，盲目去 ReadRaw 会导致永久死锁！
+        // 任何残余在流中的垃圾换行符，将会在下一次 ReadHeader 寻找 ZPAD 的循环中被天然丢弃，这才是最安全的。
 
         byte type = ParseHex2(hex, 0);
-        byte d0   = ParseHex2(hex, 2);
-        byte d1   = ParseHex2(hex, 4);
-        byte d2   = ParseHex2(hex, 6);
-        byte d3   = ParseHex2(hex, 8);
-        uint data = (uint)(d0 | (d1 << 8) | (d2 << 16) | (d3 << 24));
-
-        // Detect if server supports CRC-32 (from ZRINIT flags)
-        if (type == ZRINIT) _useCrc32 = (d0 & CANFC32) != 0;
-
-        return (type, data);
+        byte d0 = ParseHex2(hex, 2), d1 = ParseHex2(hex, 4), d2 = ParseHex2(hex, 6), d3 = ParseHex2(hex, 8);
+        return (type, (uint)(d0 | (d1 << 8) | (d2 << 16) | (d3 << 24)));
     }
 
     private (byte Type, uint Data) ReadBinHeader(CancellationToken ct, bool crc32)
     {
         int crcBytes = crc32 ? 4 : 2;
-        var buf      = new byte[5 + crcBytes];
-        for (int i = 0; i < buf.Length; i++)
-        {
-            int b = ReadEscaped(ct);
-            if (b < 0) throw new EndOfStreamException();
-            buf[i] = (byte)b;
-        }
+        var buf = new byte[5 + crcBytes];
+        for (int i = 0; i < buf.Length; i++) buf[i] = (byte)ReadEscaped(ct);
         uint data = (uint)(buf[1] | (buf[2] << 8) | (buf[3] << 16) | (buf[4] << 24));
         return (buf[0], data);
     }
-
-    // ── Data 子包读取 ─────────────────────────────────────────────────────────
 
     private (byte[] Data, byte EndType) ReadDataSubpacket(CancellationToken ct)
     {
@@ -389,122 +441,120 @@ internal sealed class ZmodemTransfer
         while (true)
         {
             int b = ReadRaw(ct);
-            if (b < 0) throw new EndOfStreamException();
-
             if (b == ZDLESC)
             {
                 int b2 = ReadRaw(ct);
-                if (b2 < 0) throw new EndOfStreamException();
-
-                // Sub-packet end markers appear as raw bytes after ZDLESC
                 if (b2 == ZCRCE || b2 == ZCRCG || b2 == ZCRCQ || b2 == ZCRCW)
                 {
-                    // Skip CRC (4 bytes, possibly escaped)
                     int crcLen = _useCrc32 ? 4 : 2;
                     for (int i = 0; i < crcLen; i++) ReadEscaped(ct);
                     return (buf.ToArray(), (byte)b2);
                 }
-                buf.Add((byte)(b2 ^ 0x40));
+                if (b2 == ZRUB0) buf.Add(0x7F);
+                else if (b2 == ZRUB1) buf.Add(0xFF);
+                else buf.Add((byte)(b2 ^ 0x40));
             }
-            else if (b == XON || b == XOFF || b == (XON | 0x80) || b == (XOFF | 0x80))
-            {
-                continue;
-            }
-            else
-            {
-                buf.Add((byte)b);
-            }
+            else if (b == XON || b == XOFF || b == (XON | 0x80) || b == (XOFF | 0x80)) continue;
+            else buf.Add((byte)b);
         }
     }
 
-    // ── Frame 构建 ────────────────────────────────────────────────────────────
+    // ── Frame 构建（发送侧统一使用稳定的 16-bit CRC）───────────────────────────
 
     private void SendZrinit(CancellationToken ct)
     {
-        // Flags: CANFDX | CANOVIO | CANFC32 = 0x23
+        // 先尽量贴近 lrzsz 的默认能力位，避免用 ESCCTL 把对端带进更激进的转义路径。
         uint flags = CANFDX | CANOVIO | CANFC32;
-        SendHexHeader(ZRINIT, flags, ct);
+        SendHexHeader(ZRINIT, MakeHeaderData(zf0: (byte)flags), ct);
     }
 
     private void SendHexHeader(byte type, uint data, CancellationToken ct)
     {
-        var hdr = new byte[5]
-        {
-            type,
-            (byte)(data & 0xFF),
-            (byte)((data >> 8) & 0xFF),
-            (byte)((data >> 16) & 0xFF),
-            (byte)((data >> 24) & 0xFF)
-        };
-        var crc = Crc16(hdr);
+        byte frameType = (byte)(type & 0x7F);
+        var hdr = new byte[5] { frameType, (byte)(data & 0xFF), (byte)((data >> 8) & 0xFF), (byte)((data >> 16) & 0xFF), (byte)((data >> 24) & 0xFF) };
+        ushort crc = FinalizeCrc16(Crc16(hdr));
 
-        var sb = new StringBuilder(32);
-        sb.Append("**\x18B");
-        foreach (var b in hdr)          sb.Append(b.ToString("x2"));
-        sb.Append(((byte)(crc >> 8)).ToString("x2"));
-        sb.Append(((byte)(crc & 0xFF)).ToString("x2"));
-        sb.Append("\r\n\x11");
+        // 必须尽量按 lrzsz zshhdr 的字节序列发：
+        // ** ZDLE ZHEX + 14 个 hex 字符 + CR + (LF|0x80) + 可选 XON。
+        // 使用 0x8A 而不是普通 LF，可避免某些 PTY/line discipline 把 hex 头结尾改写。
+        var bytes = new byte[22 + (type != ZACK && type != ZFIN ? 1 : 0)];
+        int pos = 0;
+        bytes[pos++] = ZPAD;
+        bytes[pos++] = ZPAD;
+        bytes[pos++] = ZDLESC;
+        bytes[pos++] = ZHEX;
+        pos = AppendHexByte(bytes, pos, frameType);
+        pos = AppendHexByte(bytes, pos, hdr[1]);
+        pos = AppendHexByte(bytes, pos, hdr[2]);
+        pos = AppendHexByte(bytes, pos, hdr[3]);
+        pos = AppendHexByte(bytes, pos, hdr[4]);
+        pos = AppendHexByte(bytes, pos, (byte)(crc >> 8));
+        pos = AppendHexByte(bytes, pos, (byte)(crc & 0xFF));
+        bytes[pos++] = 0x0D;
+        bytes[pos++] = 0x8A;
+        if (type != ZACK && type != ZFIN)
+            bytes[pos++] = XON;
 
-        var bytes = Encoding.ASCII.GetBytes(sb.ToString());
         _stream.Write(bytes, 0, bytes.Length);
         _stream.Flush();
     }
 
-    private static byte[] BuildBinHeader32(byte type, uint data)
+    private static byte[] BuildBinHeader16(byte type, uint data)
     {
-        var hdr = new byte[5]
-        {
-            type,
-            (byte)(data & 0xFF),
-            (byte)((data >> 8) & 0xFF),
-            (byte)((data >> 16) & 0xFF),
-            (byte)((data >> 24) & 0xFF)
-        };
-        var crc = Crc32(hdr);
+        var hdr = new byte[5] { type, (byte)(data & 0xFF), (byte)((data >> 8) & 0xFF), (byte)((data >> 16) & 0xFF), (byte)((data >> 24) & 0xFF) };
+        ushort crc = FinalizeCrc16(Crc16(hdr));
 
-        var buf = new List<byte>(16);
-        buf.Add(ZPAD);
-        buf.Add(ZDLESC);
-        buf.Add(ZBIN32);
+        var buf = new List<byte>(16) { ZPAD, ZDLESC, ZBIN };
         foreach (var b in hdr) AddEscaped(buf, b);
+        AddEscaped(buf, (byte)(crc >> 8)); 
         AddEscaped(buf, (byte)(crc & 0xFF));
-        AddEscaped(buf, (byte)((crc >> 8) & 0xFF));
-        AddEscaped(buf, (byte)((crc >> 16) & 0xFF));
-        AddEscaped(buf, (byte)((crc >> 24) & 0xFF));
         return buf.ToArray();
     }
 
-    private static byte[] BuildDataSubpacket(byte[] data, int offset, int count, byte endType)
+    private void SendBinHeader16(byte type, uint data)
     {
-        var buf = new List<byte>(count + 16);
+        var hdr = BuildBinHeader16(type, data);
+        _stream.Write(hdr, 0, hdr.Length);
+        _stream.Flush();
+    }
 
-        uint crc = 0xFFFFFFFF;
+    private static byte[] BuildDataSubpacket16(byte[] data, int offset, int count, byte endType)
+    {
+        var buf = new List<byte>(count + 24);
+        ushort crc = 0;
         for (int i = offset; i < offset + count; i++)
         {
-            crc = UpdateCrc32(crc, data[i]);
+            crc = UpdateCrc16(crc, data[i]);
             AddEscaped(buf, data[i]);
         }
-        crc = UpdateCrc32(crc, endType);
-        crc ^= 0xFFFFFFFF;
+        crc = UpdateCrc16(crc, endType);
+        crc = FinalizeCrc16(crc);
 
         buf.Add(ZDLESC);
-        buf.Add(endType);
+        buf.Add(endType);  // endType (0x68-0x6B) は制御文字でないため raw で送出（lrzsz xsendline と同じ）
+        AddEscaped(buf, (byte)(crc >> 8));
         AddEscaped(buf, (byte)(crc & 0xFF));
-        AddEscaped(buf, (byte)((crc >> 8) & 0xFF));
-        AddEscaped(buf, (byte)((crc >> 16) & 0xFF));
-        AddEscaped(buf, (byte)((crc >> 24) & 0xFF));
+        if (endType == ZCRCW)
+            buf.Add(XON);
         return buf.ToArray();
     }
 
     private void SendAbort()
     {
+        try { _stream.Write(new byte[] { 0x18, 0x18, 0x18, 0x18, 0x18, 0x08, 0x08, 0x08, 0x08, 0x08 }, 0, 10); _stream.Flush(); } catch { }
+    }
+
+    private void SendOverAndOut()
+    {
         try
         {
-            var cancel = new byte[] { 0x18, 0x18, 0x18, 0x18, 0x18, 0x08, 0x08, 0x08, 0x08, 0x08 };
-            _stream.Write(cancel, 0, cancel.Length);
+            _stream.Write(new byte[] { (byte)'O', (byte)'O' }, 0, 2);
             _stream.Flush();
         }
-        catch { }
+        catch
+        {
+            // 会话已结束时无需再向上抛，保留已有传输结果即可。
+        }
     }
 
     // ── 底层读取 ──────────────────────────────────────────────────────────────
@@ -513,9 +563,58 @@ internal sealed class ZmodemTransfer
     {
         if (_pushback.Count > 0) return _pushback.Dequeue();
         ct.ThrowIfCancellationRequested();
-        var buf = new byte[1];
-        int n = _stream.Read(buf, 0, 1);
-        return n == 0 ? -1 : buf[0];
+
+        if (_readBufPos >= _readBufLen)
+        {
+            _readBufLen = ReadIntoBufferWithTimeout(ct);
+            _readBufPos = 0;
+            if (_readBufLen <= 0) throw new EndOfStreamException();
+        }
+        return _readBuf[_readBufPos++];
+    }
+
+    private int ReadIntoBufferWithTimeout(CancellationToken ct)
+    {
+        try
+        {
+            ct.ThrowIfCancellationRequested();
+
+            if (_stream.CanTimeout)
+            {
+                int prevTimeout = _stream.ReadTimeout;
+                try
+                {
+                    _stream.ReadTimeout = ReadTimeoutMs;
+                    return _stream.Read(_readBuf, 0, _readBuf.Length);
+                }
+                finally
+                {
+                    _stream.ReadTimeout = prevTimeout;
+                }
+            }
+
+            if (CheckDataAvailable != null)
+            {
+                var deadline = DateTime.UtcNow.AddMilliseconds(ReadTimeoutMs);
+                while (!CheckDataAvailable() && DateTime.UtcNow < deadline)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    Thread.Sleep(ReadPollMs);
+                }
+                if (!CheckDataAvailable())
+                    throw new EndOfStreamException($"ZMODEM 读取超时（{ReadTimeoutMs / 1000} 秒无响应，{_waitReason}）");
+            }
+
+            return _stream.Read(_readBuf, 0, _readBuf.Length);
+        }
+        catch (TimeoutException)
+        {
+            throw new EndOfStreamException($"ZMODEM 读取超时（{ReadTimeoutMs / 1000} 秒无响应，{_waitReason}）");
+        }
+        catch (IOException ex)
+        {
+            throw new EndOfStreamException($"读取错误 ({ex.Message})，{_waitReason}");
+        }
     }
 
     private int ReadEscaped(CancellationToken ct)
@@ -523,93 +622,56 @@ internal sealed class ZmodemTransfer
         while (true)
         {
             int b = ReadRaw(ct);
-            if (b < 0) return -1;
             if (b == XON || b == XOFF || b == (XON | 0x80) || b == (XOFF | 0x80)) continue;
             if (b != ZDLESC) return b;
+
             int b2 = ReadRaw(ct);
-            if (b2 < 0) return -1;
+            if (b2 == ZCRCE || b2 == ZCRCG || b2 == ZCRCQ || b2 == ZCRCW) return b2;
+            if (b2 == ZRUB0) return 0x7F;
+            if (b2 == ZRUB1) return 0xFF;
             return b2 ^ 0x40;
         }
     }
 
     private void Unget(byte b) => _pushback.Enqueue(b);
 
-    // ── 工具方法 ──────────────────────────────────────────────────────────────
+    public byte[] GetUnconsumedData()
+    {
+        var list = new List<byte>();
+        while (_pushback.Count > 0) list.Add(_pushback.Dequeue());
+        for (int i = _readBufPos; i < _readBufLen; i++) list.Add(_readBuf[i]);
+        _readBufPos = _readBufLen;
+        return list.ToArray();
+    }
 
     private static void AddEscaped(List<byte> buf, byte b)
     {
-        if (b == ZDLESC || b == XON || b == XOFF ||
-            b == (byte)(XON | 0x80) || b == (byte)(XOFF | 0x80))
-        {
-            buf.Add(ZDLESC);
-            buf.Add((byte)(b ^ 0x40));
-        }
-        else
-        {
-            buf.Add(b);
-        }
+        if ((b & 0x60) == 0) { buf.Add(ZDLESC); buf.Add((byte)(b ^ 0x40)); }
+        else if (b == 0x7F) { buf.Add(ZDLESC); buf.Add(ZRUB0); }
+        else if (b == 0xFF) { buf.Add(ZDLESC); buf.Add(ZRUB1); }
+        else buf.Add(b);
     }
 
-    private static byte ParseHex2(byte[] data, int offset)
+    private static byte ParseHex2(byte[] data, int offset) => (byte)((H(data[offset]) << 4) | H(data[offset + 1]));
+    private static int H(byte c) => c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : 0;
+    private static int AppendHexByte(byte[] buffer, int offset, byte value)
     {
-        static int H(byte c) => c >= '0' && c <= '9' ? c - '0' :
-                                 c >= 'a' && c <= 'f' ? c - 'a' + 10 :
-                                 c >= 'A' && c <= 'F' ? c - 'A' + 10 : 0;
-        return (byte)((H(data[offset]) << 4) | H(data[offset + 1]));
+        const string digits = "0123456789abcdef";
+        buffer[offset++] = (byte)digits[(value >> 4) & 0x0F];
+        buffer[offset++] = (byte)digits[value & 0x0F];
+        return offset;
     }
-
-    private static string FormatSize(long bytes) => bytes switch
-    {
-        < 1024           => $"{bytes} B",
-        < 1024 * 1024    => $"{bytes / 1024.0:F1} KB",
-        _                => $"{bytes / 1024.0 / 1024.0:F1} MB"
-    };
-
+    private static string FormatSize(long bytes) => bytes < 1024 ? $"{bytes} B" : bytes < 1024 * 1024 ? $"{bytes / 1024.0:F1} KB" : $"{bytes / 1024.0 / 1024.0:F1} MB";
+    private static uint MakeHeaderData(byte p0 = 0, byte p1 = 0, byte zf1 = 0, byte zf0 = 0)
+        => (uint)(p0 | (p1 << 8) | (zf1 << 16) | (zf0 << 24));
     // ── CRC ──────────────────────────────────────────────────────────────────
 
-    private static ushort Crc16(ReadOnlySpan<byte> data)
-    {
-        uint crc = 0;
-        foreach (var b in data)
-            crc = ((crc << 8) ^ s_crc16Table[((crc >> 8) ^ b) & 0xFF]) & 0xFFFF;
-        return (ushort)crc;
-    }
-
-    private static uint Crc32(ReadOnlySpan<byte> data)
-    {
-        uint crc = 0xFFFFFFFF;
-        foreach (var b in data)
-            crc = UpdateCrc32(crc, b);
-        return crc ^ 0xFFFFFFFF;
-    }
-
-    private static uint UpdateCrc32(uint crc, byte b)
-        => (crc >> 8) ^ s_crc32Table[(crc ^ b) & 0xFF];
-
-    private static readonly uint[] s_crc16Table = BuildCrc16Table();
-    private static readonly uint[] s_crc32Table = BuildCrc32Table();
-
-    private static uint[] BuildCrc16Table()
-    {
-        var t = new uint[256];
-        for (uint i = 0; i < 256; i++)
-        {
-            uint c = i << 8;
-            for (int j = 0; j < 8; j++) c = (c & 0x8000) != 0 ? (c << 1) ^ 0x1021 : c << 1;
-            t[i] = c & 0xFFFF;
-        }
-        return t;
-    }
-
-    private static uint[] BuildCrc32Table()
-    {
-        var t = new uint[256];
-        for (uint i = 0; i < 256; i++)
-        {
-            uint c = i;
-            for (int j = 0; j < 8; j++) c = (c & 1) != 0 ? (c >> 1) ^ 0xEDB88320 : c >> 1;
-            t[i] = c;
-        }
-        return t;
-    }
+    private static ushort Crc16(ReadOnlySpan<byte> data) { ushort crc = 0; foreach (var b in data) crc = UpdateCrc16(crc, b); return crc; }
+    private static ushort FinalizeCrc16(ushort crc) => UpdateCrc16(UpdateCrc16(crc, 0), 0);
+    // 必须与 lrzsz 的 updcrc 宏保持完全一致：
+    // crctab[((crc >> 8) & 255)] ^ (crc << 8) ^ cp
+    private static ushort UpdateCrc16(ushort crc, byte b)
+        => (ushort)((s_crc16Table[(crc >> 8) & 0xFF] ^ (crc << 8) ^ b) & 0xFFFF);
+    private static readonly ushort[] s_crc16Table = BuildCrc16Table();
+    private static ushort[] BuildCrc16Table() { var t = new ushort[256]; for (uint i = 0; i < 256; i++) { uint c = i << 8; for (int j = 0; j < 8; j++) c = (c & 0x8000) != 0 ? (c << 1) ^ 0x1021 : c << 1; t[i] = (ushort)(c & 0xFFFF); } return t; }
 }

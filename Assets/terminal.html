@@ -116,6 +116,7 @@
       const { type, sessionId } = msg;
       if      (type === 'create')   createSession(sessionId);
       else if (type === 'activate') activateSession(sessionId);
+      else if (type === 'focus')    focusSession(sessionId);
       else if (type === 'data')     writeData(sessionId, msg.data);
       else if (type === 'resize')   resizeSession(sessionId, msg.cols, msg.rows);
       else if (type === 'destroy')  destroySession(sessionId);
@@ -160,7 +161,6 @@
       const fit = new FitAddon.FitAddon();
       term.loadAddon(fit);
       term.open(wrap);
-      fit.fit();
 
       term.onData(data => {
         window.chrome.webview.postMessage(
@@ -178,6 +178,7 @@
       });
 
       sessions[id] = { term, fit, wrap };
+      scheduleSessionLayout(id, { notify: false, focus: false });
     }
 
     function activateSession(id) {
@@ -187,21 +188,23 @@
         splitPrimId = id;
         if (sessions[id]) {
           sessions[id].wrap.classList.add('split-primary');
-          sessions[id].fit.fit();
-          sessions[id].term.focus();
-          notifySize(id);
+          activeId = id;
+          scheduleSessionLayout(id, { notify: true, focus: true });
         }
-        activeId = id;
         return;
       }
       // 普通模式
       Object.values(sessions).forEach(s => s.wrap.classList.remove('active'));
       if (!sessions[id]) return;
       sessions[id].wrap.classList.add('active');
-      sessions[id].fit.fit();
-      sessions[id].term.focus();
       activeId = id;
-      notifySize(id);
+      scheduleSessionLayout(id, { notify: true, focus: true });
+    }
+
+    function focusSession(id) {
+      if (!sessions[id]) return;
+      activeId = id;
+      scheduleSessionLayout(id, { notify: true, focus: true });
     }
 
     function setSplitMode(pId, sId) {
@@ -218,11 +221,8 @@
       if (sessions[sId]) sessions[sId].wrap.classList.add('split-secondary');
       divider.classList.add('active');
 
-      setTimeout(() => {
-        if (sessions[pId]) { sessions[pId].fit.fit(); notifySize(pId); }
-        if (sessions[sId]) { sessions[sId].fit.fit(); notifySize(sId); }
-        if (sessions[pId]) sessions[pId].term.focus();
-      }, 30);
+      if (sessions[pId]) scheduleSessionLayout(pId, { notify: true, focus: true });
+      if (sessions[sId]) scheduleSessionLayout(sId, { notify: true, focus: false });
     }
 
     function exitSplitMode() {
@@ -245,7 +245,7 @@
     function resizeSession(id, cols, rows) {
       if (!sessions[id]) return;
       try { sessions[id].term.resize(cols, rows); } catch(e) {}
-      sessions[id].fit.fit();
+      scheduleSessionLayout(id, { notify: false, focus: false });
     }
 
     function destroySession(id) {
@@ -264,6 +264,33 @@
       window.chrome.webview.postMessage(
         JSON.stringify({ type: 'resize', sessionId: id, cols, rows })
       );
+    }
+
+    function syncSessionLayout(id, { notify = true, focus = false } = {}) {
+      if (!sessions[id]) return false;
+      const { wrap, fit, term } = sessions[id];
+      if (wrap.clientWidth < 8 || wrap.clientHeight < 8) return false;
+
+      try { fit.fit(); } catch (e) {}
+      if (notify) notifySize(id);
+      if (focus) {
+        try { window.focus(); } catch (e) {}
+        try { term.focus(); } catch (e) {}
+      }
+      return true;
+    }
+
+    function scheduleSessionLayout(id, { notify = true, focus = false } = {}) {
+      [0, 30, 120].forEach(delay => {
+        setTimeout(() => {
+          if (!sessions[id]) return;
+          requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+              syncSessionLayout(id, { notify, focus });
+            });
+          });
+        }, delay);
+      });
     }
 
     // ── 键盘快捷键 ────────────────────────────────────────────────────────────
@@ -366,11 +393,10 @@
 
     // ── 自动调整大小 ──────────────────────────────────────────────────────────
     new ResizeObserver(() => {
-      if (splitPrimId && sessions[splitPrimId]) { sessions[splitPrimId].fit.fit(); notifySize(splitPrimId); }
-      if (splitSecId  && sessions[splitSecId])  { sessions[splitSecId].fit.fit();  notifySize(splitSecId);  }
-      if (!splitPrimId && activeId && sessions[activeId]) {
-        sessions[activeId].fit.fit();
-        notifySize(activeId);
+      if (splitPrimId !== null && sessions[splitPrimId]) scheduleSessionLayout(splitPrimId, { notify: true, focus: false });
+      if (splitSecId  !== null && sessions[splitSecId])  scheduleSessionLayout(splitSecId,  { notify: true, focus: false });
+      if (splitPrimId === null && activeId !== null && sessions[activeId]) {
+        scheduleSessionLayout(activeId, { notify: true, focus: false });
       }
     }).observe(root);
   </script>

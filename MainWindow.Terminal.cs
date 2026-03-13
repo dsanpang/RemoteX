@@ -163,6 +163,61 @@ namespace RemoteX
             }
         }
 
+        private void EnsureTerminalViewport(long instanceId, bool activateSession)
+        {
+            if (!_webViewReady) return;
+            _ = EnsureTerminalViewportAsync(instanceId, activateSession);
+        }
+
+        private async Task EnsureTerminalViewportAsync(long instanceId, bool activateSession)
+        {
+            try
+            {
+                ApplyTerminalViewport(instanceId, activateSession);
+                await Dispatcher.InvokeAsync(
+                    () => ApplyTerminalViewport(instanceId, false),
+                    System.Windows.Threading.DispatcherPriority.Render);
+                await Task.Delay(60);
+                await Dispatcher.InvokeAsync(
+                    () => ApplyTerminalViewport(instanceId, false),
+                    System.Windows.Threading.DispatcherPriority.Input);
+                await Task.Delay(120);
+                await Dispatcher.InvokeAsync(
+                    () => ApplyTerminalViewport(instanceId, false),
+                    System.Windows.Threading.DispatcherPriority.Background);
+            }
+            catch (Exception ex)
+            {
+                AppLogger.Warn($"terminal viewport sync ignored: {ex.Message}");
+            }
+        }
+
+        private void ApplyTerminalViewport(long instanceId, bool activateSession)
+        {
+            if (!_webViewReady || TerminalWebView.Visibility != Visibility.Visible)
+                return;
+            if (!TryGetLiveTabSession(instanceId, out var current) || current is not TerminalTabSession)
+                return;
+
+            bool shouldFocus = _activeTabId == instanceId || (_splitMode && _secondaryTabId == instanceId);
+            if (!shouldFocus)
+                return;
+
+            try { TerminalWebView.UpdateLayout(); } catch { }
+
+            try
+            {
+                TerminalWebView.Focus();
+                System.Windows.Input.Keyboard.Focus(TerminalWebView);
+            }
+            catch { }
+
+            if (activateSession)
+                SendWebViewMessage(new { type = "activate", sessionId = (int)instanceId });
+
+            SendWebViewMessage(new { type = "focus", sessionId = (int)instanceId });
+        }
+
         // ── 建立 SSH / Telnet 连接 ────────────────────────────────────────────
 
         internal async Task ConnectTerminalAsync(ServerInfo server, bool forceNew = false)
@@ -214,8 +269,8 @@ namespace RemoteX
             Title = $"RemoteX — {server.Name}";
 
             // 在 xterm.js 中创建对应终端实例（sessionId = instanceId）
-            SendWebViewMessage(new { type = "create",   sessionId = (int)instanceId });
-            SendWebViewMessage(new { type = "activate", sessionId = (int)instanceId });
+            SendWebViewMessage(new { type = "create", sessionId = (int)instanceId });
+            EnsureTerminalViewport(instanceId, activateSession: true);
             UpdateTabDot(tab, null);
 
             // 数据接收：SSH/Telnet → xterm.js
@@ -237,6 +292,8 @@ namespace RemoteX
                 StatusText.Text = $"已连接  {server.Name}";
                 _appSettings.AddRecentServer(server.Id);
                 RefreshRecentSection();
+                if (_activeTabId == instanceId)
+                    EnsureTerminalViewport(instanceId, activateSession: false);
             });
 
             // 断开回调
@@ -258,31 +315,35 @@ namespace RemoteX
             });
 
             // 接收完成 → 弹 SaveFileDialog 保存
+            // 使用 Invoke（同步）：ZMODEM 协议已结束，阻塞 SSH 读线程等待用户确认路径，确保对话框在前台出现
             service.ZmodemFileReceived = (filename, data) =>
-                Dispatcher.BeginInvoke(() => ZmodemSaveFile(filename, data));
+                Dispatcher.Invoke(() => ZmodemSaveFile(filename, data));
 
-            // 需要上传 → 弹 OpenFileDialog，在 UI 线程执行后返回结果
+            // 需要上传 → 同步弹 OpenFileDialog，优先让文件窗口立刻出现；
+            // 文件内容读取放到后台线程，避免选中文件后卡住 UI。
             service.ZmodemRequestUpload = () =>
             {
-                var tcs = new System.Threading.Tasks.TaskCompletionSource<(string, byte[])>();
-                Dispatcher.BeginInvoke(() =>
+                try
                 {
-                    try
+                    string? filePath = Dispatcher.Invoke(() =>
                     {
                         var dlg = new Microsoft.Win32.OpenFileDialog { Title = "选择要上传的文件" };
-                        if (dlg.ShowDialog() == true)
-                        {
-                            var bytes = File.ReadAllBytes(dlg.FileName);
-                            tcs.SetResult((System.IO.Path.GetFileName(dlg.FileName), bytes));
-                        }
-                        else
-                        {
-                            tcs.SetCanceled();
-                        }
-                    }
-                    catch (Exception ex) { tcs.SetException(ex); }
-                });
-                return tcs.Task;
+                        return dlg.ShowDialog() == true ? dlg.FileName : null;
+                    });
+
+                    if (string.IsNullOrEmpty(filePath))
+                        return Task.FromCanceled<(string, byte[])>(new System.Threading.CancellationToken(true));
+
+                    return Task.Run(() =>
+                    {
+                        var bytes = File.ReadAllBytes(filePath);
+                        return (System.IO.Path.GetFileName(filePath), bytes);
+                    });
+                }
+                catch (Exception ex)
+                {
+                    return Task.FromException<(string, byte[])>(ex);
+                }
             };
 
             try

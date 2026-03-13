@@ -308,6 +308,8 @@ namespace RemoteX
                     _activeTabId = instanceId;
                     UpdateStatusTabSelection();
                     UpdateCurrentTabStatus();
+                    if (activeTab is TerminalTabSession)
+                        EnsureTerminalViewport(instanceId, activateSession: false);
                     return;
                 }
                 else
@@ -340,8 +342,6 @@ namespace RemoteX
                 TerminalWebView.Visibility = Visibility.Visible;
                 RdpContainer.Visibility    = Visibility.Collapsed;
                 IdlePanel.Visibility       = Visibility.Collapsed;
-                // 在分屏模式下，activate 会在 JS 侧切换主侧 session
-                SendWebViewMessage(new { type = "activate", sessionId = (int)instanceId });
             }
             else
             {
@@ -354,7 +354,11 @@ namespace RemoteX
             UpdateStatusTabSelection();
             UpdateCurrentTabStatus();
 
-            if (activeTab is RdpTabSession { IsConnected: true })
+            if (activeTab is TerminalTabSession)
+            {
+                EnsureTerminalViewport(instanceId, activateSession: true);
+            }
+            else if (activeTab is RdpTabSession { IsConnected: true })
             {
                 _syncDisplaySettingsRequested = true;
                 _resizeTimer.Stop();

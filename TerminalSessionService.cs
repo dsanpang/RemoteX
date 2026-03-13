@@ -136,7 +136,8 @@ internal sealed class TerminalSessionService : IDisposable
         _ = Task.Run(() => ReadSshLoop(_readCts!.Token));
     }
 
-    // ZMODEM 魔法头：** CAN (B|A|C)  →  0x2A 0x2A 0x18 0x42/0x41/0x43
+    // ZMODEM 握手：rz 触发为 **B01xx（ZRINIT），sz 触发为 **B00xx（ZRQINIT）。
+    // 必须基于原始 byte[] 识别，进入传输模式后全程操作字节流，不得用 UTF-8 解码协议数据，否则会破坏帧并导致乱码/校验失败。
     private static readonly byte[] s_zmodemMagic = { 0x2A, 0x2A, 0x18 };
 
     private void ReadSshLoop(CancellationToken ct)
@@ -147,14 +148,26 @@ internal sealed class TerminalSessionService : IDisposable
         {
             while (!ct.IsCancellationRequested && _shellStream != null && IsConnected)
             {
+                // 原始字节读取，不做 \n→\r\n 等转换，否则会破坏 ZMODEM 帧
                 int count = _shellStream.Read(buffer, 0, buffer.Length);
                 if (count <= 0) break;
 
-                // 扫描是否包含 ZMODEM 魔法序列 **\x18[ABC]
+                // 扫描是否包含 ZMODEM 握手 **\x18[ABC]（即 **B0100 / **B0000 等）
                 int zStart = FindZmodemMagic(buffer, count);
                 if (zStart >= 0)
                 {
-                    // 把魔法序列之前的数据发给终端
+                    // 尾帧（ZFIN/ZACK）不当作新会话，避免多次「传输中/传输结束」
+                    if (TrySkipTrailingHexFrame(buffer, zStart, count, out int skipBytes))
+                    {
+                        if (zStart > 0)
+                            DataReceived?.Invoke(Encoding.UTF8.GetString(buffer, 0, zStart));
+                        int rest = count - zStart - skipBytes;
+                        if (rest > 0)
+                            DataReceived?.Invoke(Encoding.UTF8.GetString(buffer, zStart + skipBytes, rest));
+                        continue;
+                    }
+
+                    // 仅将握手之前的正常输出用 UTF-8 送终端显示；ZMODEM 段不经过任何字符解码
                     if (zStart > 0)
                         DataReceived?.Invoke(Encoding.UTF8.GetString(buffer, 0, zStart));
 
@@ -162,7 +175,11 @@ internal sealed class TerminalSessionService : IDisposable
                     int lookaheadLen = count - zStart;
                     var lookahead    = new ReadOnlySpan<byte>(buffer, zStart, lookaheadLen);
 
-                    RunZmodemTransfer(lookahead, ct);
+                    bool didTransfer = RunZmodemTransfer(lookahead, ct);
+                    if (!didTransfer)
+                    {
+                        // 仅收尾（首帧 ZFIN），下一轮 Read 会继续读到 "rz: file removed" 等
+                    }
                     continue; // 传输完成后继续正常读循环
                 }
 
@@ -197,33 +214,91 @@ internal sealed class TerminalSessionService : IDisposable
         return -1;
     }
 
-    private void RunZmodemTransfer(ReadOnlySpan<byte> lookahead, CancellationToken ct)
+    /// <summary>若 buffer[zStart..] 为 hex 帧且类型为 ZFIN(8) 或 ZACK(3)，返回 true 并输出跳过的字节数；否则返回 false。</summary>
+    private static bool TrySkipTrailingHexFrame(byte[] buffer, int zStart, int count, out int skipBytes)
     {
-        if (_shellStream == null) return;
+        skipBytes = 0;
+        // hex 帧：**\x18B + 14 个十六进制字符 = 4+14=18（尾部 CR/LF 留给下一段显示）
+        const int hexHeaderLen = 4 + 14;
+        if (count < zStart + 6 || buffer[zStart + 3] != 0x42) return false;
+        byte type = (byte)((ParseHexChar(buffer[zStart + 4]) << 4) | ParseHexChar(buffer[zStart + 5]));
+        if (type != 8 && type != 3) return false; // 非 ZFIN、ZACK 不跳过
+        if (count < zStart + hexHeaderLen) return false;
+        skipBytes = hexHeaderLen;
+        return true;
+    }
 
-        AppLogger.Info("zmodem transfer initiated");
+    private static int ParseHexChar(byte b)
+    {
+        if (b >= (byte)'0' && b <= (byte)'9') return b - (byte)'0';
+        if (b >= (byte)'a' && b <= (byte)'f') return b - (byte)'a' + 10;
+        if (b >= (byte)'A' && b <= (byte)'F') return b - (byte)'A' + 10;
+        return 0;
+    }
+
+    private bool RunZmodemTransfer(ReadOnlySpan<byte> lookahead, CancellationToken ct)
+    {
+        if (_shellStream == null) return false;
+
         DataReceived?.Invoke("\r\n[ZMODEM 传输中...]\r\n");
 
+        // 设置读超时，防止 ShellStream.Read() 在服务端停止发送帧后永久阻塞
+        int prevReadTimeout = Timeout.Infinite;
+        try
+        {
+            if (_shellStream.CanTimeout)
+            {
+                prevReadTimeout = _shellStream.ReadTimeout;
+                _shellStream.ReadTimeout = 30_000; // 30 秒单次读超时
+            }
+        }
+        catch { }
+
+        var receivedFiles = new List<(string Name, byte[] Data)>();
+        bool didTransfer = false;
+        byte[] unconsumed = Array.Empty<byte>(); // 记录残留数据
         try
         {
             var xfer = new ZmodemTransfer(_shellStream, lookahead);
-            xfer.StatusChanged    = msg => ZmodemStatus?.Invoke(msg);
-            xfer.FileReceived     = (name, data) => ZmodemFileReceived?.Invoke(name, data);
-            xfer.RequestUploadFile = ZmodemRequestUpload;
+            xfer.StatusChanged       = msg  => ZmodemStatus?.Invoke(msg);
+            xfer.FileReceived        = (n, d) => receivedFiles.Add((n, d));
+            xfer.RequestUploadFile   = ZmodemRequestUpload;
+            xfer.CheckDataAvailable  = () => _shellStream.DataAvailable;
 
-            xfer.Run(ct);
+            didTransfer = xfer.Run(ct);
+            // 关键修复：把多读的 Shell 提示符拿回来
+            unconsumed = xfer.GetUnconsumedData();
         }
         catch (OperationCanceledException) { }
         catch (Exception ex)
         {
             AppLogger.Error("zmodem transfer error", ex);
             DataReceived?.Invoke($"\r\n[ZMODEM 错误：{ex.Message}]\r\n");
+            didTransfer = true;
         }
         finally
         {
-            DataReceived?.Invoke("\r\n[ZMODEM 传输结束]\r\n");
-            AppLogger.Info("zmodem transfer finished");
+            try
+            {
+                if (_shellStream.CanTimeout)
+                    _shellStream.ReadTimeout = prevReadTimeout;
+            }
+            catch { }
         }
+
+        if (didTransfer)
+        {
+            DataReceived?.Invoke("\r\n[ZMODEM 传输结束]\r\n");
+            foreach (var (name, data) in receivedFiles)
+                ZmodemFileReceived?.Invoke(name, data);
+
+            // 把终端原本的字符显示出来
+            if (unconsumed.Length > 0)
+            {
+                DataReceived?.Invoke(Encoding.UTF8.GetString(unconsumed));
+            }
+        }
+        return didTransfer;
     }
 
     // ── Telnet ────────────────────────────────────────────────────────────────
